@@ -22,6 +22,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useCreateLead } from "@/hooks/kanban/useCreateLead";
+import { useAssignableMembers } from "@/hooks/inbox/useAssignableMembers";
+import { useAssignableAgents } from "@/hooks/kanban/useAssignableAgents";
+import { usePermission } from "@/hooks/auth/AuthProvider";
 import type { Stage } from "@/lib/kanban/types";
 import { createLeadSchema, type CreateLeadInput } from "@/lib/schemas/leads";
 import { parseReaisToCents } from "@/lib/money";
@@ -34,7 +37,16 @@ interface FormShape {
   valueReais: string;
   tagsRaw: string;
   expected_close_date: string;
+  /**
+   * Um campo só, não dois — "none" | "user:<id>" | "agent:<id>". A API trata
+   * owner_user_id/owner_agent_id como MUTUAMENTE EXCLUSIVOS (mandar os dois
+   * não-nulos é 422); codificar como string única torna essa exclusão
+   * estrutural, em vez de depender de zerar um campo quando o outro muda.
+   */
+  owner: string;
 }
+
+const SEM_RESPONSAVEL = "none";
 
 interface Props {
   open: boolean;
@@ -54,6 +66,13 @@ export function NewLeadDialog({ open, onOpenChange, pipelineId, stages, contactI
   const create = useCreateLead(pipelineId);
   const initialStage = useMemo(() => defaultStageId(stages), [stages]);
 
+  // Mesmo par de hooks e mesma permissão do menu "Responsável" no card do
+  // Kanban (KanbanCardActions.tsx) — a lista de quem pode ser dono é UMA só,
+  // vivendo num lugar só; reescrevê-la aqui divergiria na primeira mudança.
+  const canAssign = usePermission("pipeline.move_card");
+  const { data: members } = useAssignableMembers(canAssign && open);
+  const { data: agents } = useAssignableAgents(canAssign && open);
+
   const form = useForm<FormShape>({
     defaultValues: {
       title: "",
@@ -62,6 +81,7 @@ export function NewLeadDialog({ open, onOpenChange, pipelineId, stages, contactI
       valueReais: "",
       tagsRaw: "",
       expected_close_date: "",
+      owner: SEM_RESPONSAVEL,
     },
   });
 
@@ -100,6 +120,8 @@ export function NewLeadDialog({ open, onOpenChange, pipelineId, stages, contactI
     if (values.description.trim()) payload.description = values.description.trim();
     if (valueCents !== null) payload.value_cents = valueCents;
     if (values.expected_close_date) payload.expected_close_date = values.expected_close_date;
+    if (values.owner.startsWith("user:")) payload.owner_user_id = values.owner.slice(5);
+    else if (values.owner.startsWith("agent:")) payload.owner_agent_id = values.owner.slice(6);
 
     const parsed = createLeadSchema.safeParse(payload);
     if (!parsed.success) {
@@ -118,6 +140,7 @@ export function NewLeadDialog({ open, onOpenChange, pipelineId, stages, contactI
         valueReais: "",
         tagsRaw: "",
         expected_close_date: "",
+        owner: SEM_RESPONSAVEL,
       });
       onOpenChange(false);
     } catch {
@@ -126,6 +149,7 @@ export function NewLeadDialog({ open, onOpenChange, pipelineId, stages, contactI
   }
 
   const stageId = form.watch("stage_id");
+  const owner = form.watch("owner");
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -176,6 +200,31 @@ export function NewLeadDialog({ open, onOpenChange, pipelineId, stages, contactI
               </SelectContent>
             </Select>
           </div>
+
+          {canAssign && (
+            <div className="space-y-2">
+              <Label>Responsável</Label>
+              <Select value={owner} onValueChange={(v) => form.setValue("owner", v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Sem responsável" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={SEM_RESPONSAVEL}>Sem responsável</SelectItem>
+                  {(members ?? []).map((m) => (
+                    <SelectItem key={m.user_id} value={`user:${m.user_id}`}>
+                      {m.full_name ?? "Sem nome"}
+                    </SelectItem>
+                  ))}
+                  {(agents ?? []).map((a) => (
+                    <SelectItem key={a.agent_id} value={`agent:${a.agent_id}`}>
+                      {a.name}
+                      {a.version_number != null ? ` · v${a.version_number}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2">
