@@ -81,6 +81,10 @@ export async function generateMetadata(): Promise<Metadata> {
   const { marca } = await marcaResolvida();
   const { name } = marca;
   return {
+    // Favicon: quando há logo configurado (banco > .env), o <link rel="icon">
+    // aponta DIRETO pra URL da imagem — o NAVEGADOR busca, não o servidor, então
+    // não é o SSRF que app/icon.tsx evita (ver o cabeçalho daquele arquivo). Sem
+    // logo, cai no ícone gerado em runtime (cor + inicial) como sempre foi.
     title: {
       default: `${name} — atendimento e vendas por WhatsApp com agentes de IA`,
       template: `%s · ${name}`,
@@ -98,13 +102,17 @@ export async function generateMetadata(): Promise<Metadata> {
       "multi-tenant",
     ],
     robots: { index: false, follow: false },
-    // Sem esta linha o navegador pede `/favicon.ico`, que não existe: medido em
-    // produção, o 404 é a `app/not-found.tsx` INTEIRA (19.435 bytes de HTML)
-    // servida para um pedido de ícone, em toda navegação sem cache. Declarar
-    // `/icon` faz o pedido ir para `app/icon.tsx`, que desenha a marca da
-    // instalação em runtime — ver o cabeçalho daquele arquivo para por que ele
-    // não pode ser um arquivo estático em `public/`.
-    icons: { icon: "/icon" },
+    // Sem ícone nenhum declarado o navegador pede `/favicon.ico`, que não
+    // existe: medido em produção, o 404 é a `app/not-found.tsx` INTEIRA
+    // (19.435 bytes de HTML) servida para um pedido de ícone, em toda
+    // navegação sem cache. `/icon` (app/icon.tsx) desenha a marca da
+    // instalação em runtime — ver o cabeçalho daquele arquivo para por que
+    // ele não pode ser um arquivo estático em `public/`, e por que não busca
+    // `logo_url` (SSRF: fetch de URL livre digitada pelo operador, disparado
+    // pelo <head> de toda página pública). `marca.logoUrl` aqui é diferente:
+    // vira `<link rel="icon" href="...">`, e é o NAVEGADOR quem busca — sem
+    // requisição de saída do servidor, sem SSRF.
+    icons: { icon: marca.logoUrl || "/icon" },
   };
 }
 
