@@ -77,31 +77,34 @@ export function SidebarContent({
   return (
     <>
       <div className={cn("flex items-center border-b px-4 h-14", collapsed ? "justify-center" : "justify-start")}>
-        {logo && !collapsed ? (
+        {logo ? (
           // <img> em vez de next/image de propósito: a URL vem de quem hospeda
           // (banco ou .env), e next/image exige allowlist de domínios fechada em
           // build — a imagem pré-buildada rejeitaria o domínio do self-hoster.
-          // Altura fixa e largura livre porque a arte enviada tem proporção
-          // desconhecida; forçar as duas distorceria o logo de quem configurou.
+          // Colapsado, vira um ladrilho 32x32 (mesma área do avatar/inicial que
+          // substitui); expandido, altura fixa e largura livre porque a arte
+          // enviada tem proporção desconhecida — forçar as duas distorceria o
+          // logo de quem configurou.
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={logo}
             alt={nome}
-            className="h-7 w-auto max-w-[10rem] object-contain"
+            className={cn(
+              "object-contain",
+              collapsed ? "h-8 w-8" : "h-7 w-auto max-w-[10rem]",
+            )}
           />
-        ) : (
-          <span className={cn("font-semibold tracking-tight", collapsed && "sr-only")}>
-            {nome}
-          </span>
-        )}
-        {collapsed && (
+        ) : collapsed ? (
           <span aria-hidden className="text-lg font-bold text-primary">
             {/* Spread e não `[0]`: nome começando com emoji ou acento composto
                 quebraria no meio do code point. Mesma regra de `resolveBranding`
                 — a inicial precisa acompanhar o nome que a barra mostra, senão
-                recolher o menu troca a marca. */}
+                recolher o menu troca a marca. Só chega aqui quando NÃO há logo
+                — com logo configurado, ele acompanha o recolhimento acima. */}
             {[...nome][0]?.toUpperCase() ?? brand.initial}
           </span>
+        ) : (
+          <span className="font-semibold tracking-tight">{nome}</span>
         )}
       </div>
       <nav className="flex-1 space-y-3 overflow-y-auto p-2" aria-label="Navegação principal">
