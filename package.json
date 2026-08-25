@@ -78,6 +78,7 @@
     "qrcode": "^1.5.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "react-easy-crop": "^6.2.3",
     "react-hook-form": "^7.85.0",
     "react-hotkeys-hook": "^5.3.3",
     "recharts": "^3.10.1",

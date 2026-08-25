@@ -25,11 +25,16 @@
  *
  * O que torna a exceção contida, e o que o invariante `tests/invariants/
  * marca-logo.test.ts` mede:
- *   - bucket EXCLUSIVO de logos (nada de conversa, export ou base de conhecimento);
+ *   - bucket EXCLUSIVO de imagem pública de identidade visual — nada de
+ *     conversa, export ou base de conhecimento (também guarda o avatar de
+ *     perfil, `lib/profile/avatar.ts`, prefixo `avatars/<user_id>/`: mesmo
+ *     motivo — aparece na casca do app o tempo todo, sem sessão "renovando"
+ *     URL assinada — e criar um SEGUNDO bucket público quebraria o invariante
+ *     abaixo em vez de reaproveitar a exceção já auditada);
  *   - ZERO policy de escrita em `storage.objects` para ele — só o `service_role`
  *     escreve, pela rota, depois dos gates;
  *   - caminho NÃO-ENUMERÁVEL (`<prefixo>/<uuid v4>.<ext>`): saber o id da
- *     organização não dá o caminho do arquivo;
+ *     organização (ou do usuário, no caso do avatar) não dá o caminho do arquivo;
  *   - só entram bytes FAREJADOS (`lib/branding/logo-arquivo.ts`), nunca o
  *     `Content-Type` que o cliente escolheu.
  *

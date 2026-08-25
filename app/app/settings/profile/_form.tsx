@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { updateProfile } from "@/app/actions/settings/updateProfile";
+import { AvatarCropDialog } from "@/components/settings/AvatarCropDialog";
 import { profileSchema, type Locale } from "@/lib/schemas/settings";
 
 const TIMEZONES = [
@@ -111,17 +112,12 @@ export function ProfileForm({ email, initialFullName, initialAvatarUrl }: Props)
           </div>
         </div>
         <div className="space-y-2">
-          <Label htmlFor="avatar_url">Avatar URL</Label>
-          <Input
-            id="avatar_url"
-            type="url"
-            placeholder="https://…"
-            value={avatarUrl}
-            onChange={(e) => setAvatarUrl(e.target.value)}
+          <Label>Foto de perfil</Label>
+          <AvatarCropDialog
+            currentUrl={avatarUrl || null}
+            displayName={fullName || email}
+            onUploaded={(url) => setAvatarUrl(url)}
           />
-          <p className="text-xs text-muted-foreground">
-            Upload de arquivo — em breve. Cole uma URL pública.
-          </p>
         </div>
         <div className="flex sm:justify-end">
           <Button type="submit" disabled={isPending} className="w-full sm:w-auto">
