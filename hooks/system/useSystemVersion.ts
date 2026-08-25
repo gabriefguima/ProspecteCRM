@@ -6,6 +6,8 @@ import { apiClient } from "@/lib/api/client";
 export interface SystemVersion {
   current_version: string;
   is_owner: boolean;
+  /** `false` quando `UPDATE_CHECK_ENABLED=false` no `.env` do host. */
+  update_check_enabled?: boolean;
   latest_version?: string;
   update_available?: boolean;
   off_release?: boolean;

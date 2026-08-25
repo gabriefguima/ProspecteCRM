@@ -10,6 +10,7 @@ import type { NextRequest } from "next/server";
 import { fail, ok } from "@/lib/api/wrappers";
 import { audit } from "@/lib/audit";
 import { loadAuthUser } from "@/lib/auth/server";
+import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isRunStale } from "@/lib/system/update-run";
@@ -25,6 +26,14 @@ export async function POST(_req: NextRequest): Promise<Response> {
   if (!user) return fail("unauthenticated", "Faça login para continuar.", 401);
   if (!user.is_platform_admin) {
     return fail("forbidden", "Só o dono do servidor pode atualizar o sistema.", 403);
+  }
+
+  // Defesa em profundidade: mesmo que a tela esconda o botão quando
+  // `UPDATE_CHECK_ENABLED=false` (ver lib/env.ts), a rota recusa o pedido
+  // também — sem isto, um POST direto (curl, bookmark antigo) ainda
+  // dispararia a atualização contra o repositório que o host segue.
+  if (!env.UPDATE_CHECK_ENABLED) {
+    return fail("forbidden", "Atualização automática desativada nesta instalação.", 403);
   }
 
   const db = createAdminClient();

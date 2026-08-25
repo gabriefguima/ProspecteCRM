@@ -26,7 +26,13 @@ export function VersionFooter({
   // conta: uma instalação de desenvolvimento sem versão publicada mais nova
   // ficava com o ponto pulsando pra sempre, e o texto "Nova versão · " com o
   // número vazio, apontando para uma tela que não tem o que oferecer.
-  const alerta = data.is_owner && data.update_available;
+  //
+  // `update_check_enabled !== false` explícito (não só confiar que a API já
+  // devolve `update_available: false` quando desligado): a intenção de nunca
+  // mostrar o aviso nesta instalação precisa estar visível aqui, no
+  // componente que decide o que a pessoa vê — não só uma consequência
+  // indireta de outro campo.
+  const alerta = data.is_owner && data.update_check_enabled !== false && data.update_available;
 
   if (!alerta) {
     return (

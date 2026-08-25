@@ -9,6 +9,7 @@ import type { NextRequest } from "next/server";
 
 import { fail, ok } from "@/lib/api/wrappers";
 import { loadAuthUser } from "@/lib/auth/server";
+import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { extractChangelogSection } from "@/lib/system/changelog";
@@ -79,12 +80,21 @@ export async function GET(_req: NextRequest): Promise<Response> {
     return ok({ current_version: running, is_owner: false });
   }
 
+  // Checagem desligada nesta instalação (ver o comentário de
+  // `UPDATE_CHECK_ENABLED` em lib/env.ts) — nunca reporta `update_available`,
+  // não importa o que `system_version.latest_version` tenha gravado (o
+  // heartbeat do host continua rodando; é só a TELA que ignora o resultado).
+  if (!env.UPDATE_CHECK_ENABLED) {
+    return ok({ current_version: running, is_owner: true, update_check_enabled: false, update_available: false });
+  }
+
   const latest = version?.latest_version ?? "";
   const section = latest ? extractChangelogSection(version?.changelog_raw ?? "", latest) : null;
 
   return ok({
     current_version: running,
     is_owner: true,
+    update_check_enabled: true,
     latest_version: latest,
     update_available: Boolean(latest) && latest !== running,
     off_release: version?.off_release ?? false,

@@ -85,6 +85,25 @@ export function UpdatePanel() {
   const versao = semV(data.current_version);
   const nova = semV(data.latest_version);
 
+  // Desligado por decisão do dono (`UPDATE_CHECK_ENABLED=false` no `.env` do
+  // host) — nunca "você está em dia": essa frase afirmaria que a checagem
+  // rodou e não achou nada, quando na verdade ela nem rodou.
+  if (data.update_check_enabled === false) {
+    return (
+      <Layout titulo="Checagem de atualização desativada">
+        <p className="text-sm text-muted-foreground">
+          Esta instalação está configurada para não comparar automaticamente a versão instalada com
+          releases publicados. Não sei dizer se há uma versão nova — a checagem está desligada, não
+          "em dia".
+        </p>
+        <p className="mt-3 text-sm text-muted-foreground">
+          Versão instalada: {versao}. Para reativar, defina <code>UPDATE_CHECK_ENABLED=true</code> no{" "}
+          <code>.env</code> do servidor e reinicie o app.
+        </p>
+      </Layout>
+    );
+  }
+
   if (rodando) {
     return (
       <Layout titulo={`Atualizando para a versão ${nova}`}>

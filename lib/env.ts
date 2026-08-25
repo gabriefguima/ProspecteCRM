@@ -279,6 +279,31 @@ const schema = z.object({
     .default("false")
     .transform((v) => v === "true"),
 
+  /**
+   * A checagem automática de versão nova (rodapé "Nova versão" + tela de
+   * atualização) compara a instalação contra as tags publicadas do repositório
+   * de ONDE o host der `git fetch` — não necessariamente o do produto oficial.
+   *
+   * Default `true`: preserva o comportamento que toda instalação já tinha
+   * (a feature nunca teve flag antes desta). Existe para uma situação
+   * específica e perigosa: uma instalação cujo checkout no host (`origin` do
+   * `hostgator-setup-kit/agent.sh`) ainda aponta para um repositório DIFERENTE
+   * do que a imagem publicada em produção — ex.: um fork com customizações
+   * próprias cujo `.env` já foi apontado para uma imagem Docker diferente
+   * (`APP_IMAGE`), mas o clone git do host nunca foi. Nesse caso o botão
+   * "Atualizar agora" ofereceria uma versão do repositório ERRADO — clicar
+   * reverteria as customizações do fork, não atualizaria para uma versão
+   * dele. `UPDATE_CHECK_ENABLED=false` no `.env` desliga o aviso e o botão
+   * (`/api/v1/system/version` reporta `update_check_enabled: false` e nunca
+   * `update_available: true`; `/api/v1/system/update` recusa o POST) sem
+   * remover nada do host — é reversível só voltando a flag para `true`.
+   */
+  UPDATE_CHECK_ENABLED: z
+    .enum(["true", "false"])
+    .optional()
+    .default("true")
+    .transform((v) => v === "true"),
+
   // App URLs
   NEXT_PUBLIC_APP_URL: z
     .string()
