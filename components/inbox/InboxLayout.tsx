@@ -23,8 +23,9 @@ import { CRMSidePanel } from "./CRMSidePanel";
 import type { Message as ConversationMensagem } from "@/lib/types/messaging";
 import { InboxKeyboardShortcuts } from "./InboxKeyboardShortcuts";
 import { ShortcutsHelpDialog } from "./ShortcutsHelpDialog";
+import { NovaConversaDialog } from "./NovaConversaDialog";
 // ADR-05: ícone de feature sai do mapa canônico, nunca do pacote direto.
-import { CaretLeft, IdentificationCard } from "@/lib/ui/icons";
+import { CaretLeft, IdentificationCard, Plus } from "@/lib/ui/icons";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
@@ -121,6 +122,7 @@ export function InboxLayout({ initialSelectedId = null }: InboxLayoutProps = {})
   );
 
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
+  const [novaConversaOpen, setNovaConversaOpen] = useState(false);
   const [visibleIds, setVisibleIds] = useState<string[]>([]);
   const [helpOpen, setHelpOpen] = useState(false);
   /** A ficha do contato como painel deslizante — só existe abaixo do `xl`. */
@@ -303,6 +305,18 @@ export function InboxLayout({ initialSelectedId = null }: InboxLayoutProps = {})
           colunas.lista,
         )}
       >
+        <div className="flex items-center justify-between gap-2 border-b border-border bg-background px-3 py-2">
+          <h2 className="text-sm font-semibold">Inbox</h2>
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            onClick={() => setNovaConversaOpen(true)}
+          >
+            <Plus size={14} weight="bold" aria-hidden />
+            Nova conversa
+          </Button>
+        </div>
         <InboxFilters value={filterValue} onChange={setFilterValue} />
         <div className="min-h-0 flex-1 overflow-hidden">
           <ConversationList
@@ -419,6 +433,11 @@ export function InboxLayout({ initialSelectedId = null }: InboxLayoutProps = {})
         onToggleHelp={() => setHelpOpen((v) => !v)}
       />
       <ShortcutsHelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
+      <NovaConversaDialog
+        open={novaConversaOpen}
+        onOpenChange={setNovaConversaOpen}
+        onCreated={handleSelect}
+      />
     </div>
   );
 }

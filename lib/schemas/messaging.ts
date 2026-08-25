@@ -155,6 +155,26 @@ export const openConversationWithContactSchema = z
 export type OpenConversationWithContactInput = z.infer<typeof openConversationWithContactSchema>;
 
 /**
+ * POST /conversations/start-manual — tela "Nova conversa": humano escolhe (ou
+ * cria) um contato e escreve a primeira mensagem. Mesmas duas formas de
+ * apontar o contato de `openConversationWithContactSchema` (id existente OU
+ * nome+telefone novo) — reaproveita a mesma validação em vez de reinventar.
+ */
+export const startManualConversationSchema = z
+  .object({
+    channel_session_id: z.string().uuid(),
+    contact_id: z.string().uuid().optional(),
+    phone_number: z.string().min(8).max(32).optional(),
+    name: z.string().trim().min(1).max(200).optional(),
+    body: z.string().trim().min(1).max(4096),
+  })
+  .refine((d) => !!d.contact_id || !!d.phone_number?.trim(), {
+    message: "Informe contact_id ou phone_number.",
+  });
+
+export type StartManualConversationInput = z.infer<typeof startManualConversationSchema>;
+
+/**
  * Estados TERMINAIS: a conversa acabou e não volta sozinha.
  *
  * Vive aqui, e não espalhado em cada `.not(...)`, porque "acabou" é uma decisão
