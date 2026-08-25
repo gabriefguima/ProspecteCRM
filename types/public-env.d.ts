@@ -21,6 +21,13 @@ interface PublicEnv {
    */
   APP_NAME?: string;
   APP_LOGO_URL?: string;
+  /**
+   * Espelha `env.NUVEMSHOP_ENABLED` (já parseado como boolean por `lib/env.ts`)
+   * pro lado do navegador — quem lê é `lib/navigation/registry.ts`, pra decidir
+   * se o item "Nuvemshop" some do sidebar/⌘K/hub. Ver o cabeçalho de
+   * `app/public-env-script.tsx`: não é segredo, é config de feature.
+   */
+  NUVEMSHOP_ENABLED?: boolean;
 }
 
 interface Window {
