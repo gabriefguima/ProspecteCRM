@@ -13977,4 +13977,42 @@ create index if not exists messages_reply_to_idx
   on public.messages (reply_to_message_id)
   where reply_to_message_id is not null;
 
+-- ---- lead único por contato aberto (migration 0169) ----
+-- Ingestão concorrente (mensagens quase simultâneas do mesmo contato, cada
+-- uma seu próprio webhook WAHA) corria um check-then-act sem trava em
+-- `garantirLeadDaConversa`: o SELECT de uma requisição não via o INSERT da
+-- outra, ainda não commitado, e as duas concluíam "não existe lead aberto" —
+-- cada uma inseria o seu card. Dedup ANTES da trava, genérico para qualquer
+-- banco de clone: sobrevive o lead mais antigo por (organization_id,
+-- contact_id) entre os `open`; os demais viram `lost` com o motivo canônico
+-- `other` (vocabulário fechado — `fn_validate_lost_reason_required` não
+-- aceita frase livre), com o detalhe legível em `custom_fields._dedupe_note`.
+with duplicados as (
+  select id,
+         row_number() over (
+           partition by organization_id, contact_id
+           order by created_at asc, id asc
+         ) as posicao
+    from public.crm_leads
+   where status = 'open' and contact_id is not null
+)
+update public.crm_leads l
+   set status = 'lost',
+       lost_reason = 'other',
+       closed_at = now(),
+       custom_fields = l.custom_fields || jsonb_build_object(
+         '_dedupe_note',
+         'Lead duplicado por corrida de concorrência na ingestão (mensagens quase ' ||
+         'simultâneas do mesmo contato) — arquivado em favor do lead mais antigo ' ||
+         'da mesma demanda. Ver migration 0169.'
+       )
+  from duplicados d
+ where d.id = l.id
+   and d.posicao > 1
+   and l.status = 'open';
+
+create unique index if not exists uniq_crm_leads_org_contact_aberto
+  on public.crm_leads (organization_id, contact_id)
+  where status = 'open' and contact_id is not null;
+
 notify pgrst, 'reload schema';
