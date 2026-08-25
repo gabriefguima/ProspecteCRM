@@ -200,6 +200,34 @@ services:
     logging: *default-logging
     networks: [internal]
 
+  whisper:
+    # Transcrição de áudio LOCAL, sem cota paga — speaches expõe
+    # /v1/audio/transcriptions no MESMO formato da OpenAI (ver
+    # lib/messaging/media/transcription.ts), então workers/media-derive-worker.ts
+    # não precisa saber que não é a OpenAI de verdade. Pinado por tag fixa
+    # (doutrina de packaging: dependência upstream nunca em `latest`).
+    #
+    # Opt-in: só sobe se WHISPER_BASE_URL apontar pra cá no .env. Sem a env var,
+    # o serviço fica de pé sem consumidor — inofensivo, mas por que gastar RAM
+    # à toa em quem prefere a OpenAI.
+    image: ghcr.io/speaches-ai/speaches:0.6.2-cpu
+    restart: unless-stopped
+    environment:
+      WHISPER__MODEL: Systran/faster-whisper-small
+      WHISPER__COMPUTE_TYPE: int8
+    volumes:
+      # Sem isto, o modelo (~500MB) baixa de novo a cada restart do contêiner.
+      - whisper-models:/home/ubuntu/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      # Primeiro boot baixa o modelo da Hugging Face — pode levar minutos.
+      start_period: 180s
+    logging: *default-logging
+    networks: [internal]
+
   scheduler:
     # Cron sem docker.sock: crond interno batendo curl na rede interna.
     # Resolução de 1 min (= paridade com os crons da Vercel).
@@ -248,6 +276,7 @@ volumes:
   waha-media:
   caddy-data:
   caddy-config:
+  whisper-models:
 
 networks:
   internal:

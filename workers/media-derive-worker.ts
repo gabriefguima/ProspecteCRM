@@ -250,21 +250,35 @@ function buildDeriveDeps(
     });
     return res.text;
   };
-  // Sem chave OpenAI não há como transcrever: devolver string vazia é honesto
-  // (o derivado fica vazio e o marcador "[áudio]" continua valendo) e evita o
-  // loop de 401 que retentava a cada drain.
-  const transcriber: DeriveDeps["transcriber"] = openaiKey
-    ? apiTranscriptionProvider({ apiKey: openaiKey })
-    : {
-        transcribe: async () => {
-          // Mesma razão da visão: devolver "" fazia o agente responder ao áudio
-          // como se ele não existisse. O aviso é o que dá ao operador a chance
-          // de cadastrar a chave — sem ele, o sintoma é indistinguível de "o
-          // agente é ruim".
-          await avisarMidiaNaoLida(orgId, "áudio", "falta uma chave da OpenAI para transcrever");
-          return MARCADOR_NAO_LIDA;
-        },
-      };
+  // Transcrição LOCAL (WHISPER_BASE_URL → serviço `whisper` do compose,
+  // faster-whisper/speaches) tem PRIORIDADE sobre a OpenAI: quem configurou um
+  // servidor próprio não quer pagar por chamada, e o servidor local não valida
+  // a `apiKey` — "local" é só o valor que preenche o header, nunca checado do
+  // outro lado. Sem WHISPER_BASE_URL, cai no caminho de sempre (OpenAI, exige
+  // chave). Sem chave OpenAI E sem servidor local não há como transcrever:
+  // devolver string vazia é honesto (o derivado fica vazio e o marcador
+  // "[áudio]" continua valendo) e evita o loop de 401 que retentava a cada drain.
+  const whisperLocalUrl = process.env.WHISPER_BASE_URL?.trim() || null;
+  const transcriber: DeriveDeps["transcriber"] = whisperLocalUrl
+    ? apiTranscriptionProvider({
+        apiKey: "local",
+        baseUrl: whisperLocalUrl,
+        // Precisa bater com WHISPER__MODEL do serviço `whisper` no compose —
+        // o speaches valida o campo `model` contra o que tem carregado.
+        model: "Systran/faster-whisper-small",
+      })
+    : openaiKey
+      ? apiTranscriptionProvider({ apiKey: openaiKey })
+      : {
+          transcribe: async () => {
+            // Mesma razão da visão: devolver "" fazia o agente responder ao áudio
+            // como se ele não existisse. O aviso é o que dá ao operador a chance
+            // de cadastrar a chave — sem ele, o sintoma é indistinguível de "o
+            // agente é ruim".
+            await avisarMidiaNaoLida(orgId, "áudio", "falta uma chave da OpenAI para transcrever");
+            return MARCADOR_NAO_LIDA;
+          },
+        };
   return {
     transcriber,
     describeImage,

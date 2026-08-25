@@ -158,6 +158,14 @@ const schema = z.object({
   VERCEL_AI_GATEWAY_URL: z.string().optional().default(""),
   ANTHROPIC_API_KEY: z.string().optional().default(""),
   OPENAI_API_KEY: z.string().optional().default(""),
+  // Transcrição de áudio LOCAL (faster-whisper/speaches, serviço `whisper` do
+  // compose), sem depender de cota paga da OpenAI. Vazio = comportamento de
+  // sempre (OPENAI_API_KEY contra api.openai.com). Lida via process.env DIRETO
+  // em workers/media-derive-worker.ts (não daqui) — mesmo motivo de
+  // SUPABASE_DB_URL nesse arquivo: precisa funcionar em qualquer processo que
+  // importe o handler, sem depender de QUAL schema Zod validou o boot. Esta
+  // entrada existe só pra aparecer documentada ao lado das outras.
+  WHISPER_BASE_URL: z.string().optional().default(""),
 
   // Fusão (Fase 4): DONO ÚNICO dos eventos ai_agent.dispatch_requested.
   // 'engine' (default) = o worker agent-engine é o único consumidor (o cron
