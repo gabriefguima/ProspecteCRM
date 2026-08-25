@@ -53,7 +53,7 @@ export interface PausarDeps {
   apiTokenId?: string | null;
 }
 
-export type PausarFalha = "conversation_not_found" | "update_failed";
+export type PausarFalha = "conversation_not_found" | "update_failed" | "emit_signal_failed";
 
 export type PausarResultado =
   | {
@@ -136,12 +136,42 @@ export async function pausarAtendimentoAutomatico(
     }
   }
 
+  // Sinal durável de abertura do episódio — o par de `ai.handoff_resolved` que
+  // `retomada.ts` emite na volta. É o ÚNICO produtor que PAUSA um follow-up
+  // vivo do contato (lib/followup/reactivity.ts, reactToHandoffOpen): sem isto,
+  // force_human bloqueia o ENVIO mas o enrollment continua "vivo" — o cliente
+  // não recebe nada (before-send.ts veta), mas a tela mentiria dizendo que o
+  // fluxo automático segue rodando. AWAITED, não fire-and-forget, pela mesma
+  // razão que retomada.ts documenta: perder aqui deixa o follow-up órfão sem
+  // ninguém para pausá-lo depois.
+  if (!jaEstavaPausada) {
+    const { error: emitErr } = await supabase.rpc("emit_event", {
+      p_event_type: "ai.handoff_triggered",
+      p_entity_kind: "conversation",
+      p_entity_id: input.conversationId,
+      p_payload: {
+        conversation_id: input.conversationId,
+        contact_id: conv.contact_id,
+        organization_id: organizationId,
+      },
+      p_metadata: { source: "escalacao.pausar", request_id: deps.requestId },
+      p_organization_id: organizationId,
+    });
+    if (emitErr) {
+      return { ok: false, erro: "emit_signal_failed", detalhe: emitErr.message };
+    }
+  }
+
   if (conv.contact_id !== null && !jaEstavaPausada) {
     await emitirAtividadeDePausa(deps, conv.contact_id, input.conversationId, reason);
   }
 
   await audit({
-    action: "human.paused_agent",
+    // O par de "ai.reactivated_by_agent" (retomada.ts) — mesmo namespace `ai.*`
+    // dos dois lados do handoff, mesmo quando quem aciona é uma pessoa clicando
+    // num botão. Já existe na lista canônica (lib/audit/actions.ts); não invento
+    // outra.
+    action: "ai.handoff_triggered",
     actorUserId: deps.actor.type === "user" ? deps.actor.id : null,
     actorApiTokenId: deps.apiTokenId ?? null,
     organizationId,

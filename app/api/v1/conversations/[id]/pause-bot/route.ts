@@ -47,6 +47,17 @@ export async function POST(_req: NextRequest, ctx: RouteCtx): Promise<Response> 
     if (resultado.erro === "conversation_not_found") {
       return fail("not_found", "Conversa não encontrada.", 404, { requestId });
     }
+    if (resultado.erro === "emit_signal_failed") {
+      // O bloqueio (force_human) já foi gravado antes deste passo — a IA já
+      // não responde. O que falhou foi só o sinal que pausa um follow-up vivo
+      // do contato; repetir é seguro (idempotente).
+      return fail(
+        "internal_error",
+        "Atendimento pausado, mas o sinal que pausa o acompanhamento automático falhou — tente de novo.",
+        500,
+        { requestId },
+      );
+    }
     return fail(
       "internal_error",
       "Não consegui pausar o atendimento automático — tente de novo.",
