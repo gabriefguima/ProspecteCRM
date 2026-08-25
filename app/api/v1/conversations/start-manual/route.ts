@@ -10,11 +10,11 @@
  *   2. `pausarAtendimentoAutomatico` — a conversa nasce com `force_human=true`:
  *      quem começou foi um humano, e o agente não deve responder, mesmo que
  *      o contato responda depois. Ver o cabeçalho de lib/escalacao/pausar.ts.
- *   3. `sendMessageHandler` — envia a mensagem via WAHA, o mesmo caminho que
+ *   3. `sendMessageHandler` — envia a mensagem pelo canal, o mesmo caminho que
  *      qualquer outra mensagem outbound do inbox usa.
  *
  * A ordem importa: pausar ANTES de enviar, não depois — se o passo 3 falhar
- * (WAHA fora do ar, por exemplo), a conversa já criada não fica um instante
+ * (o canal fora do ar, por exemplo), a conversa já criada não fica um instante
  * sequer elegível para o agente responder.
  *
  * Auth: cookie session, role >= agent (mesmo mínimo de /messages e

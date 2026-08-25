@@ -227,8 +227,8 @@ export async function garantirLeadDaConversa(
     // O SELECT do passo 2 é otimista — ingestão concorrente (mensagens quase
     // simultâneas do mesmo contato, cada uma seu próprio webhook) pode passar
     // pelas duas checagens antes de qualquer INSERT commitar. Quem perde a
-    // corrida do banco não falhou: só chegou depois. Mesmo padrão de
-    // `lib/followup/gatilho-caso.ts` e `lib/channels/zernio/ingest.ts`.
+    // corrida do banco não falhou: só chegou depois. Mesmo padrão já usado em
+    // `lib/followup/gatilho-caso.ts` e no ingest de outro canal em `lib/channels/`.
     if (error?.code === "23505") return { criado: false, motivo: "ja_existe" };
     return { criado: false, motivo: "erro", detalhe: error?.message.slice(0, 120) };
   }
