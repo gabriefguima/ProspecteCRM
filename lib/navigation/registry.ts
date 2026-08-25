@@ -81,7 +81,34 @@ export interface NavDestination {
   /** Ausente = só no hub. `true` = uso diário, sobe para o sidebar. */
   sidebar?: boolean;
   healthDot?: boolean;
+  /**
+   * Feature ligada por env var (não por papel). Hoje só "nuvemshop"
+   * (`NUVEMSHOP_ENABLED`) — `canSee()` consulta `FLAGS_HABILITADAS[flag]`
+   * ANTES do papel, então quem desligou a env var some do sidebar, do ⌘K e do
+   * hub pra TODO mundo, inclusive platform_admin.
+   */
+  flag?: "nuvemshop";
 }
+
+/**
+ * Lê `NUVEMSHOP_ENABLED` dos dois lados da fronteira — mesma disciplina de
+ * `lib/branding.ts`: nunca importar `@/lib/env` aqui, porque este módulo é
+ * importado por client component (`Sidebar.tsx`, `CommandPalette.tsx`) e
+ * `env.ts` faz `schema.safeParse(process.env)` sobre o objeto INTEIRO — no
+ * bundle do navegador isso não crasha, mas nunca vê a env var real (só
+ * NEXT_PUBLIC_* sobrevive à queima do build), e o `.env` genuíno do
+ * self-hoster ficaria sempre lido como "desligado" no cliente.
+ */
+function nuvemshopHabilitada(): boolean {
+  if (typeof window !== "undefined") {
+    return window.__PUBLIC_ENV__?.NUVEMSHOP_ENABLED === true;
+  }
+  return process.env.NUVEMSHOP_ENABLED === "true";
+}
+
+const FLAGS_HABILITADAS: Record<NonNullable<NavDestination["flag"]>, () => boolean> = {
+  nuvemshop: nuvemshopHabilitada,
+};
 
 /**
  * Grupos por OBJETIVO, na ordem de uso: o que se abre toda hora primeiro, o que
@@ -371,6 +398,7 @@ export const NAV_DESTINATIONS: NavDestination[] = [
     // desconectar exigem admin — mostrar a um viewer seria oferecer botão morto.
     minRole: "admin",
     sidebar: true,
+    flag: "nuvemshop",
   },
   {
     href: "/app/webhooks",
@@ -517,6 +545,10 @@ export const NAV_DESTINATIONS: NavDestination[] = [
  * Como função pura, um `.filter()` resolve todas.
  */
 export function canSee(d: NavDestination, isPlatformAdmin: boolean, role: Role | null): boolean {
+  // A env var vem ANTES do papel, e vale até pra platform_admin: feature
+  // desligada na instalação não é "escondida de quem não pode", é ausente —
+  // o super-admin também não vê o que o operador desligou no .env.
+  if (d.flag && !FLAGS_HABILITADAS[d.flag]()) return false;
   if (isPlatformAdmin) return true;
   if (!role) return false;
   return ROLE_RANK[role] >= ROLE_RANK[d.minRole ?? "viewer"];

@@ -71,6 +71,9 @@ export async function PublicEnvScript({
     // `""`), então o navegador não precisa aprender um segundo jeito de dizer
     // "não tem logo".
     APP_LOGO_URL: marca.logoUrl ?? "",
+    // Config de feature, não segredo — `lib/navigation/registry.ts` lê daqui
+    // no navegador pra decidir se o item "Nuvemshop" existe no sidebar/⌘K/hub.
+    NUVEMSHOP_ENABLED: env.NUVEMSHOP_ENABLED,
   })
     // Evita quebrar o </script> se algum valor contiver a sequência.
     .replace(/</g, "\\u003c");

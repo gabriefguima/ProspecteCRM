@@ -10,9 +10,11 @@
  * lives at /api/v1/integrations/nuvemshop/callback.
  */
 
+import { notFound } from "next/navigation";
 import { Storefront } from "@/lib/ui/icons";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { env } from "@/lib/env";
 import { loadAuthUser, resolveActiveOrg } from "@/lib/auth/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isConfigured } from "@/lib/nuvemshop/config";
@@ -41,6 +43,13 @@ async function loadIntegration(orgId: string): Promise<IntegrationRow | null> {
 }
 
 export default async function NuvemshopIntegrationPage() {
+  // Trava a ROTA, não só o item do menu: esconder do sidebar/⌘K não impede
+  // acesso direto pela URL, e a instalação desligou a feature de propósito
+  // (NUVEMSHOP_ENABLED=false) — 404 é o estado correto, mesmo pra quem tem
+  // o link salvo ou digita a URL de cabeça. Ver lib/navigation/registry.ts
+  // pra a mesma trava do lado do menu.
+  if (!env.NUVEMSHOP_ENABLED) notFound();
+
   const user = await loadAuthUser();
   const activeOrg = user ? await resolveActiveOrg(user) : null;
   const configured = isConfigured();
