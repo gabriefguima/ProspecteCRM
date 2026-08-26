@@ -23,6 +23,7 @@ interface Props {
   orderDir: "asc" | "desc";
   onSort: (column: ContactOrderBy) => void;
   /** Seleção em lote (checkbox) — opcional; sem ela a coluna nem aparece. */
+  selectionMode?: boolean;
   checkedIds?: Set<string>;
   onToggleCheck?: (id: string) => void;
   onToggleAll?: (ids: string[]) => void;
@@ -91,11 +92,12 @@ export function ContactsTable({
   orderBy,
   orderDir,
   onSort,
+  selectionMode,
   checkedIds,
   onToggleCheck,
   onToggleAll,
 }: Props) {
-  const showSelection = Boolean(onToggleCheck && onToggleAll);
+  const showSelection = Boolean(selectionMode && onToggleCheck && onToggleAll);
   const allChecked = contacts.length > 0 && contacts.every((c) => checkedIds?.has(c.id));
 
   return (

@@ -310,15 +310,24 @@ export function InboxLayout({ initialSelectedId = null }: InboxLayoutProps = {})
       >
         <div className="flex items-center justify-between gap-2 border-b border-border bg-background px-3 py-2">
           <h2 className="text-sm font-semibold">Inbox</h2>
-          <Button
-            size="sm"
-            variant="outline"
-            className="gap-1.5"
-            onClick={() => setNovaConversaOpen(true)}
-          >
-            <Plus size={14} weight="bold" aria-hidden />
-            Nova conversa
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={selection.isActive ? selection.exit : selection.activate}
+            >
+              {selection.isActive ? "Cancelar seleção" : "Selecionar"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              onClick={() => setNovaConversaOpen(true)}
+            >
+              <Plus size={14} weight="bold" aria-hidden />
+              Nova conversa
+            </Button>
+          </div>
         </div>
         <InboxFilters value={filterValue} onChange={setFilterValue} />
         <div className="min-h-0 flex-1 overflow-hidden">
@@ -329,6 +338,7 @@ export function InboxLayout({ initialSelectedId = null }: InboxLayoutProps = {})
             onSelect={handleSelect}
             clientFilter={clientFilter}
             onVisibleChange={handleVisibleChange}
+            selectionMode={selection.isActive}
             checkedIds={new Set(selection.selectedIds)}
             onToggleCheck={selection.toggle}
           />
@@ -336,7 +346,7 @@ export function InboxLayout({ initialSelectedId = null }: InboxLayoutProps = {})
         {/* Fica FORA do container que rola (o próprio ConversationList tem seu
             scroll interno) — assim a barra ocupa uma faixa fixa no rodapé da
             coluna em vez de flutuar por cima do texto da última conversa. */}
-        <InboxBulkActionBar selectedIds={selection.selectedIds} onClear={selection.clear} />
+        <InboxBulkActionBar selectedIds={selection.selectedIds} onClear={selection.exit} />
       </div>
 
       {/*

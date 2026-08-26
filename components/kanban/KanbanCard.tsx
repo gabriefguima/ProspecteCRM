@@ -19,6 +19,8 @@ interface KanbanCardProps {
   index: number;
   pipelineId: string;
   isSelected?: boolean;
+  /** Checkbox só aparece quando o modo seleção está ativo (escondido por padrão). */
+  selectionMode?: boolean;
   /**
    * Contador de pulsos deste card (evento REMOTO). Muda a cada evento novo — é
    * a MUDANÇA que remonta o overlay e reinicia a animação; um booleano deixaria
@@ -61,6 +63,7 @@ export function KanbanCard({
   index,
   pipelineId,
   isSelected,
+  selectionMode,
   pulseCount = 0,
   onSelect,
   onOpen,
@@ -134,18 +137,22 @@ export function KanbanCard({
           {/* ① identidade — altura FIXA de 2 linhas, com ou sem texto longo. */}
           <div className="flex items-start justify-between gap-2">
             <div className="flex min-w-0 flex-1 items-start gap-1.5">
-              {/* Checkbox de seleção — mesmo padrão do título abaixo
-                  (`stopPropagation`): não abre o dossiê nem interfere no
-                  drag, que o @hello-pangea/dnd distingue por movimento, não
-                  por handler. */}
-              <input
-                type="checkbox"
-                checked={Boolean(isSelected)}
-                onChange={() => onSelect?.(card.id)}
-                onClick={(e) => e.stopPropagation()}
-                aria-label={`Selecionar ${card.title}`}
-                className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-accent"
-              />
+              {/* Checkbox de seleção — escondido até o modo seleção ativar
+                  (botão "Selecionar" no cabeçalho, ou Ctrl+click num card,
+                  que já ativa `isActive` sozinho). Mesmo padrão do título
+                  abaixo (`stopPropagation`): não abre o dossiê nem interfere
+                  no drag, que o @hello-pangea/dnd distingue por movimento,
+                  não por handler. */}
+              {selectionMode && (
+                <input
+                  type="checkbox"
+                  checked={Boolean(isSelected)}
+                  onChange={() => onSelect?.(card.id)}
+                  onClick={(e) => e.stopPropagation()}
+                  aria-label={`Selecionar ${card.title}`}
+                  className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-accent"
+                />
+              )}
               {card.canonicalTag && (
                 <span
                   className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent"

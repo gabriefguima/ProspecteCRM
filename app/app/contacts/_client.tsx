@@ -93,6 +93,12 @@ export function ContactsListClient() {
           uma linha de dois botões sem isso comprime os rótulos.
         */}
         <div className="flex shrink-0 items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={selection.isActive ? selection.exit : selection.activate}
+          >
+            {selection.isActive ? "Cancelar seleção" : "Selecionar"}
+          </Button>
           <Button variant="outline" onClick={() => setImportOpen(true)}>
             <UploadSimple size={16} weight="bold" aria-hidden />
             <span>Importar CSV</span>
@@ -216,12 +222,13 @@ export function ContactsListClient() {
               orderBy={orderBy}
               orderDir={orderDir}
               onSort={handleSort}
+              selectionMode={selection.isActive}
               checkedIds={new Set(selection.selectedIds)}
               onToggleCheck={selection.toggle}
               onToggleAll={selection.selectAll}
             />
           </Card>
-          <ContactsBulkActionBar selectedIds={selection.selectedIds} onClear={selection.clear} />
+          <ContactsBulkActionBar selectedIds={selection.selectedIds} onClear={selection.exit} />
           <div className="flex flex-col items-center gap-2 sm:flex-row sm:justify-between">
             <p className="text-sm text-muted-foreground">
               {allContacts.length} contato{allContacts.length === 1 ? "" : "s"}

@@ -300,6 +300,22 @@ export async function createLeadHandler(
     .single();
 
   if (insErr || !lead) {
+    // 23505 = a trava `uniq_crm_leads_org_contact_aberto` (migration 0169)
+    // barrou — mesmo código que o caminho automático (garantirLeadDaConversa,
+    // lib/leads/nascimento-do-lead.ts) já trata como "já existe", não como
+    // falha. Aqui é criação MANUAL: em vez de engolir e não criar nada (o
+    // ator não é um webhook, é uma pessoa esperando resposta), devolve um
+    // erro de negócio claro em vez de "erro interno" — o contato já tem uma
+    // demanda aberta, não é uma falha do servidor.
+    if (insErr?.code === "23505") {
+      throw new ApiError(
+        409,
+        "lead_already_open_for_contact",
+        undefined,
+        ctx.requestId,
+        "Este contato já tem um lead aberto nesta organização.",
+      );
+    }
     throw new ApiError(
       500,
       "internal_error",

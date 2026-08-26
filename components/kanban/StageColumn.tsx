@@ -20,6 +20,8 @@ interface StageColumnProps {
   /** `settings.canonical_tags` do pipeline — a única tag que fica no card. */
   canonicalTags?: string[];
   selectedLeadIds?: Set<string>;
+  /** Checkbox só aparece nos cards quando o modo seleção está ativo. */
+  selectionMode?: boolean;
   /** leadId → quantos eventos remotos já chegaram (muda = pulsa de novo). */
   pulses?: Map<string, number>;
   onSelect?: (leadId: string) => void;
@@ -48,6 +50,7 @@ export function StageColumn({
   reactivations,
   canonicalTags,
   selectedLeadIds,
+  selectionMode,
   pulses,
   onSelect,
   onOpen,
@@ -106,6 +109,7 @@ export function StageColumn({
                 index={idx}
                 pipelineId={pipelineId}
                 isSelected={selectedLeadIds?.has(lead.id)}
+                selectionMode={selectionMode}
                 pulseCount={pulses?.get(lead.id) ?? 0}
                 onSelect={onSelect}
                 onOpen={onOpen}

@@ -28,6 +28,7 @@ interface Props {
    * uma conversa pode estar marcada para ação em lote sem estar aberta, e
    * vice-versa.
    */
+  selectionMode?: boolean;
   isChecked?: boolean;
   onToggleCheck?: (id: string) => void;
 }
@@ -75,6 +76,7 @@ export function ConversationListItem({
   onSelect,
   queuePosition,
   mostrarCanal,
+  selectionMode,
   isChecked = false,
   onToggleCheck,
 }: Props) {
@@ -119,7 +121,7 @@ export function ConversationListItem({
       )}
       aria-current={isSelected ? "true" : undefined}
     >
-      {onToggleCheck && (
+      {selectionMode && onToggleCheck && (
         <input
           type="checkbox"
           checked={isChecked}

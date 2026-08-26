@@ -31,7 +31,14 @@ interface KanbanBoardProps {
    * certo e morre na fronteira: o dado vem por prop e o sinal ficava para trás.
    */
   pulses?: Map<string, number>;
-  onSelectionChange?: (ids: string[]) => void;
+  /** Marca/desmarca um único lead — mesma assinatura de `useSelection().toggle`. */
+  onToggle?: (leadId: string) => void;
+  /**
+   * Controla se os checkboxes aparecem nos cards. Sem controle externo, cai
+   * no `isActive` da seleção interna (ativa via Ctrl+click ou nunca, já que
+   * não há botão "Selecionar" para o modo desacoplado/não-controlado).
+   */
+  selectionMode?: boolean;
 }
 
 function groupLeadsByStage(stages: Stage[], leads: Lead[]): Map<string, Lead[]> {
@@ -73,7 +80,8 @@ export function KanbanBoard({
   pipeline: pipelineProp,
   selectedIds,
   pulses: pulsesProp,
-  onSelectionChange,
+  onToggle,
+  selectionMode: selectionModeProp,
 }: KanbanBoardProps) {
   const useExternal = stagesProp !== undefined && leadsProp !== undefined;
   const queryResult = useBoard(useExternal ? null : pipelineId);
@@ -120,6 +128,7 @@ export function KanbanBoard({
     () => (selectedIds ? new Set(selectedIds) : new Set(internalSelection.selectedIds)),
     [selectedIds, internalSelection.selectedIds],
   );
+  const selectionMode = selectionModeProp ?? internalSelection.isActive;
 
   const data = useExternal
     ? {
@@ -143,16 +152,13 @@ export function KanbanBoard({
 
   const handleSelect = useCallback(
     (leadId: string) => {
-      if (onSelectionChange) {
-        const next = new Set(selectedLeadIds);
-        if (next.has(leadId)) next.delete(leadId);
-        else next.add(leadId);
-        onSelectionChange(Array.from(next));
+      if (onToggle) {
+        onToggle(leadId);
       } else {
         internalSelection.toggle(leadId);
       }
     },
-    [onSelectionChange, selectedLeadIds, internalSelection],
+    [onToggle, internalSelection],
   );
 
   const handleDragEnd = useCallback(
@@ -239,6 +245,7 @@ export function KanbanBoard({
             pulses={pulsesProp ?? queryResult.pulses}
             canonicalTags={canonicalTags}
             selectedLeadIds={selectedLeadIds}
+            selectionMode={selectionMode}
             onSelect={handleSelect}
             onOpen={setDossieId}
           />

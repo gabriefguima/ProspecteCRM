@@ -22,6 +22,7 @@ interface Props {
   /** Notifies parent when the visible list changes (used by keyboard nav). */
   onVisibleChange?: (ids: string[]) => void;
   /** Seleção em lote (checkbox) — independente de `selectedId`/`onSelect`. */
+  selectionMode?: boolean;
   checkedIds?: Set<string>;
   onToggleCheck?: (id: string) => void;
 }
@@ -33,6 +34,7 @@ export function ConversationList({
   onSelect,
   clientFilter,
   onVisibleChange,
+  selectionMode,
   checkedIds,
   onToggleCheck,
 }: Props) {
@@ -110,6 +112,7 @@ export function ConversationList({
             onSelect={onSelect}
             queuePosition={isQueue ? i + 1 : undefined}
             mostrarCanal={maisDeUmCanal}
+            selectionMode={selectionMode}
             isChecked={checkedIds?.has(c.id)}
             onToggleCheck={onToggleCheck}
           />

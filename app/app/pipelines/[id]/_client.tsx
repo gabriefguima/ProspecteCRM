@@ -2,6 +2,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useBoard } from "@/hooks/kanban/useBoard";
+import { useSelection } from "@/hooks/selection/useSelection";
 
 function formatError(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -47,7 +48,7 @@ export function PipelinePageClient({
     },
     [router, pathname],
   );
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const selection = useSelection();
   const [newOpen, setNewOpen] = useState(false);
 
   const filteredLeads = data ? applyFilters(data.leads, filters) : [];
@@ -82,9 +83,17 @@ export function PipelinePageClient({
         <h1 className="min-w-0 truncate text-2xl font-semibold tracking-tight">
           {data?.pipeline.name ?? initialName}
         </h1>
-        <Button onClick={() => setNewOpen(true)} disabled={!data} className="shrink-0">
-          <Plus size={16} className="mr-2" /> Novo Lead
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={selection.isActive ? selection.exit : selection.activate}
+          >
+            {selection.isActive ? "Cancelar seleção" : "Selecionar"}
+          </Button>
+          <Button onClick={() => setNewOpen(true)} disabled={!data}>
+            <Plus size={16} className="mr-2" /> Novo Lead
+          </Button>
+        </div>
       </header>
       {data && (
         <NewLeadDialog
@@ -111,15 +120,16 @@ export function PipelinePageClient({
           leads={filteredLeads}
           pulses={pulses}
           pipeline={data.pipeline}
-          selectedIds={selectedIds}
-          onSelectionChange={setSelectedIds}
+          selectedIds={selection.selectedIds}
+          onToggle={selection.toggle}
+          selectionMode={selection.isActive}
         />
       )}
       <BulkActionBar
-        selectedIds={selectedIds}
+        selectedIds={selection.selectedIds}
         stages={data?.stages ?? []}
         pipelineId={pipelineId}
-        onClear={() => setSelectedIds([])}
+        onClear={selection.exit}
       />
     </div>
   );

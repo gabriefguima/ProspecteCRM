@@ -58,6 +58,10 @@ const COPY: Record<string, { variant: Variant; msg: string }> = {
     variant: "error",
     msg: "Erro interno. Tente de novo em instantes.",
   },
+  lead_already_open_for_contact: {
+    variant: "warning",
+    msg: "Este contato já tem um lead aberto — abra o existente em vez de criar outro.",
+  },
 };
 
 export function showApiError(err: unknown): void {

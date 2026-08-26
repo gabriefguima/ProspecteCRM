@@ -42,6 +42,7 @@ export const ApiErrorCodes = {
   next_action_changed: "next_action_changed", // o agente reescreveu a proposta entre o render e o clique
   channel_archived: "channel_archived", // ação sobre canal que o usuário excluiu (a linha só sobrevive como âncora das FKs)
   knowledge_source_type_in_use: "knowledge_source_type_in_use", // já existe fonte ATIVA daquele tipo para o agente (índice ai_knowledge_sources_unique_per_agent)
+  lead_already_open_for_contact: "lead_already_open_for_contact", // trava uniq_crm_leads_org_contact_aberto (migration 0169) barrou a criação manual
 
   // 422 — semântica
   unprocessable_entity: "unprocessable_entity",
