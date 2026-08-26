@@ -85,7 +85,11 @@ describe("o ícone carrega para quem NÃO entrou", () => {
   it("o layout declara o ícone — é o que mata o pedido a /favicon.ico", () => {
     // O 404 de /favicon.ico não é barato: em produção ele devolve a
     // `app/not-found.tsx` inteira (19.435 bytes) para um pedido de ícone.
+    //
+    // `marca.logoUrl || "/icon"`: quem subiu um logo próprio usa a URL dele
+    // (o NAVEGADOR busca, sem SSRF do servidor); quem não subiu cai no
+    // gerador dinâmico — o `/icon` continua sendo o piso, nunca some.
     const layout = fs.readFileSync(path.join(RAIZ, "app/layout.tsx"), "utf8");
-    expect(layout).toMatch(/icons:\s*\{\s*icon:\s*"\/icon"\s*\}/);
+    expect(layout).toMatch(/icons:\s*\{\s*icon:\s*marca\.logoUrl\s*\|\|\s*"\/icon"\s*\}/);
   });
 });

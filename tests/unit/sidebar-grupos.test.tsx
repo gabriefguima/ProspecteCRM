@@ -44,7 +44,13 @@ function comoPapel(role: ActiveOrg["role"]) {
   authRef.activeOrg = { orgId: "org-1", name: "Org", role };
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // Nunca vaza entre testes: sem isto, o próximo teste que NÃO liga
+  // Nuvemshop de propósito herdaria o item visível e o registro (que
+  // decide por `window.__PUBLIC_ENV__` no navegador) mentiria.
+  delete (window as unknown as { __PUBLIC_ENV__?: unknown }).__PUBLIC_ENV__;
+});
 
 describe("Sidebar agrupado", () => {
   it("renderiza os títulos de grupo na ordem de uso", () => {
@@ -77,6 +83,12 @@ describe("Sidebar agrupado", () => {
 
   it("desenterra Nuvemshop e Audit Log", () => {
     comoPapel("admin");
+    // Nuvemshop é feature opt-in (`NUVEMSHOP_ENABLED`) desde que o registro
+    // passou a apagar o item quando a instalação não a ligou — o teste
+    // simula a instalação que ligou, que é o caso que ele examina.
+    (window as unknown as { __PUBLIC_ENV__?: { NUVEMSHOP_ENABLED: boolean } }).__PUBLIC_ENV__ = {
+      NUVEMSHOP_ENABLED: true,
+    };
     render(<Sidebar collapsed={false} />);
     // Nuvemshop não tinha link nenhum no app; Audit Log só existia via card em
     // Configurações. Canal oficial não está aqui de propósito: virou aba de

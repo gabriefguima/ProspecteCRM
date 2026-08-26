@@ -66,7 +66,13 @@ describe("canSee", () => {
   });
 
   it("platform admin vê tudo, inclusive sem org ativa", () => {
-    for (const d of NAV_DESTINATIONS) expect(canSee(d, true, null)).toBe(true);
+    // Exceto o que a INSTALAÇÃO desligou por flag (`d.flag`): "feature
+    // ausente" vale até pro platform admin — canSee() decide a env var ANTES
+    // do papel, de propósito (ver o comentário ao lado do `if (d.flag...)`).
+    // Testado sem `window.__PUBLIC_ENV__`, então toda flag lê "desligada".
+    for (const d of NAV_DESTINATIONS.filter((d) => !d.flag)) {
+      expect(canSee(d, true, null)).toBe(true);
+    }
   });
 
   it("sem papel e sem ser platform admin não vê nada", () => {
