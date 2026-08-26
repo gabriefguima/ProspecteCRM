@@ -10,9 +10,18 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { DotsThree, PencilSimple, Users } from "@/lib/ui/icons";
+import { DotsThree, PencilSimple, Trash, Users } from "@/lib/ui/icons";
 import { useWinLead, useEditLead } from "@/hooks/kanban/useUpdateLead";
+import { useBulkAction } from "@/hooks/kanban/useBulkAction";
 import { useAssignableMembers } from "@/hooks/inbox/useAssignableMembers";
 import { useAssignableAgents } from "@/hooks/kanban/useAssignableAgents";
 import { usePermission } from "@/hooks/auth/AuthProvider";
@@ -28,8 +37,12 @@ interface KanbanCardActionsProps {
 export function KanbanCardActions({ lead, pipelineId }: KanbanCardActionsProps) {
   const [loseOpen, setLoseOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const winMutation = useWinLead(pipelineId);
   const editMutation = useEditLead(pipelineId);
+  // Mesmo hook e mesma rota que o BulkActionBar (seleção múltipla) — um
+  // delete de card único é um bulk de 1 id, não um caminho novo.
+  const deleteMutation = useBulkAction(pipelineId);
   // spec 13 §4: escrita no funil é agent+ — viewer não reatribui (a rota
   // PATCH também recusa; aqui é só não oferecer o que seria negado).
   const canAssign = usePermission("pipeline.move_card");
@@ -54,6 +67,13 @@ export function KanbanCardActions({ lead, pipelineId }: KanbanCardActionsProps) 
       leadId: lead.id,
       patch: lead.owner_agent_id ? { owner_agent_id: null } : { owner_user_id: null },
     });
+  };
+
+  const runDelete = () => {
+    deleteMutation.mutate(
+      { action: "delete", lead_ids: [lead.id], params: {} },
+      { onSuccess: () => setConfirmDelete(false) },
+    );
   };
 
   return (
@@ -139,6 +159,15 @@ export function KanbanCardActions({ lead, pipelineId }: KanbanCardActionsProps) 
           >
             Marcar como perdido
           </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={() => {
+              setConfirmDelete(true);
+            }}
+          >
+            <Trash size={14} className="mr-2" /> Excluir
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -154,6 +183,26 @@ export function KanbanCardActions({ lead, pipelineId }: KanbanCardActionsProps) 
         lead={lead}
         pipelineId={pipelineId}
       />
+
+      <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Excluir "{lead.title}"?</DialogTitle>
+            <DialogDescription>
+              Remove o lead e todo o histórico dele (atividades, mudanças de etapa). Não pode ser
+              desfeito. A conversa e as mensagens do WhatsApp não são afetadas.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConfirmDelete(false)}>
+              Cancelar
+            </Button>
+            <Button variant="destructive" onClick={runDelete} disabled={deleteMutation.isPending}>
+              Excluir
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
