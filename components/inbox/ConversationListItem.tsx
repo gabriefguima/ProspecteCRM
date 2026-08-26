@@ -22,6 +22,14 @@ interface Props {
    * onde vivem os avisos que importam (bloqueado, tags).
    */
   mostrarCanal?: boolean;
+  /**
+   * Seleção em lote (checkbox) — conceito INDEPENDENTE de `isSelected`
+   * (que é "esta é a conversa aberta no painel"). As duas nunca se misturam:
+   * uma conversa pode estar marcada para ação em lote sem estar aberta, e
+   * vice-versa.
+   */
+  isChecked?: boolean;
+  onToggleCheck?: (id: string) => void;
 }
 
 const STATUS_DOT: Record<string, string> = {
@@ -67,6 +75,8 @@ export function ConversationListItem({
   onSelect,
   queuePosition,
   mostrarCanal,
+  isChecked = false,
+  onToggleCheck,
 }: Props) {
   const c = conversation.contacts ?? null;
   const displayName = rotuloDoContato(c);
@@ -88,15 +98,37 @@ export function ConversationListItem({
   const rotuloCanal = canal?.phone_number ?? canal?.display_name ?? null;
 
   return (
-    <button
-      type="button"
+    // Era um <button> inteiro; virou role="button" porque o checkbox de
+    // seleção em lote precisou entrar como irmão do avatar — dois
+    // interativos aninhados (checkbox dentro de button) é HTML inválido.
+    // Mesma solução já usada em KanbanCard.tsx (role="group" no card,
+    // elemento ativável coberto por onClick/onKeyDown aqui).
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onSelect(conversation.id)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect(conversation.id);
+        }
+      }}
       className={cn(
-        "group flex w-full items-start gap-3 border-b border-border px-3 py-3 text-left transition-colors hover:bg-accent/40",
+        "group flex w-full cursor-pointer items-start gap-3 border-b border-border px-3 py-3 text-left transition-colors hover:bg-accent/40",
         isSelected && "bg-accent/60",
       )}
       aria-current={isSelected ? "true" : undefined}
     >
+      {onToggleCheck && (
+        <input
+          type="checkbox"
+          checked={isChecked}
+          onChange={() => onToggleCheck(conversation.id)}
+          onClick={(e) => e.stopPropagation()}
+          aria-label={`Selecionar conversa com ${displayName}`}
+          className="mt-1 h-4 w-4 shrink-0 cursor-pointer accent-accent"
+        />
+      )}
       <div className="relative shrink-0">
         <Avatar className="h-10 w-10">
           {/* Só monta a <img> quando existe arquivo: sem isso o browser pediria
@@ -190,6 +222,6 @@ export function ConversationListItem({
           )}
         </div>
       </div>
-    </button>
+    </div>
   );
 }

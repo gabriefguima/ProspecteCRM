@@ -7,6 +7,8 @@ import { JanelaFechadaAviso } from "@/components/inbox/JanelaFechadaAviso";
 import { useClaimConversation } from "@/hooks/inbox/useClaimConversation";
 import { useCloseConversation } from "@/hooks/inbox/useCloseConversation";
 import { useMarkAsRead } from "@/hooks/inbox/useMarkAsRead";
+import { useSelection } from "@/hooks/selection/useSelection";
+import { InboxBulkActionBar } from "./InboxBulkActionBar";
 import {
   useConversationsRealtime,
   type ConversationsFilters,
@@ -122,6 +124,7 @@ export function InboxLayout({ initialSelectedId = null }: InboxLayoutProps = {})
   );
 
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
+  const selection = useSelection();
   const [novaConversaOpen, setNovaConversaOpen] = useState(false);
   const [visibleIds, setVisibleIds] = useState<string[]>([]);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -326,8 +329,14 @@ export function InboxLayout({ initialSelectedId = null }: InboxLayoutProps = {})
             onSelect={handleSelect}
             clientFilter={clientFilter}
             onVisibleChange={handleVisibleChange}
+            checkedIds={new Set(selection.selectedIds)}
+            onToggleCheck={selection.toggle}
           />
         </div>
+        {/* Fica FORA do container que rola (o próprio ConversationList tem seu
+            scroll interno) — assim a barra ocupa uma faixa fixa no rodapé da
+            coluna em vez de flutuar por cima do texto da última conversa. */}
+        <InboxBulkActionBar selectedIds={selection.selectedIds} onClear={selection.clear} />
       </div>
 
       {/*

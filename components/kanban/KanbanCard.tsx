@@ -25,7 +25,7 @@ interface KanbanCardProps {
    * o segundo evento dentro da janela passar despercebido.
    */
   pulseCount?: number;
-  onSelect?: (leadId: string, additive: boolean) => void;
+  onSelect?: (leadId: string) => void;
   /** Abrir o dossiê. Separado de `onSelect`: são gestos e intenções diferentes. */
   onOpen?: (leadId: string) => void;
 }
@@ -69,13 +69,14 @@ export function KanbanCard({
   const state = resolveCardState(card);
   const age = stageAgeLabel(card.hoursInStage);
 
-  // Clique ABRE o dossiê; ctrl/cmd+clique SELECIONA. "Clicar abre" é a
-  // convenção mais forte, e seleção múltipla é recurso de poder, que tolera
-  // modificador. O arrasto continua funcionando porque o dnd distingue clique
-  // de arrasto por movimento, não por handler.
+  // Clique ABRE o dossiê; ctrl/cmd+clique ou o checkbox SELECIONAM. "Clicar
+  // abre" é a convenção mais forte, e seleção múltipla é recurso de poder —
+  // o checkbox deixa isso descoberto sem depender de atalho. O arrasto
+  // continua funcionando porque o dnd distingue clique de arrasto por
+  // movimento, não por handler.
   const handleClick = (e: MouseEvent<HTMLDivElement>) => {
     if (e.metaKey || e.ctrlKey) {
-      onSelect?.(card.id, true);
+      onSelect?.(card.id);
       return;
     }
     onOpen?.(card.id);
@@ -133,6 +134,18 @@ export function KanbanCard({
           {/* ① identidade — altura FIXA de 2 linhas, com ou sem texto longo. */}
           <div className="flex items-start justify-between gap-2">
             <div className="flex min-w-0 flex-1 items-start gap-1.5">
+              {/* Checkbox de seleção — mesmo padrão do título abaixo
+                  (`stopPropagation`): não abre o dossiê nem interfere no
+                  drag, que o @hello-pangea/dnd distingue por movimento, não
+                  por handler. */}
+              <input
+                type="checkbox"
+                checked={Boolean(isSelected)}
+                onChange={() => onSelect?.(card.id)}
+                onClick={(e) => e.stopPropagation()}
+                aria-label={`Selecionar ${card.title}`}
+                className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-accent"
+              />
               {card.canonicalTag && (
                 <span
                   className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent"

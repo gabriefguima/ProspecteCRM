@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,6 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { SelectionToolbar } from "@/components/selection/SelectionToolbar";
 import { useUser } from "@/hooks/auth/AuthProvider";
 import { useBulkAction } from "@/hooks/kanban/useBulkAction";
 import type { Stage } from "@/lib/kanban/types";
@@ -40,18 +41,6 @@ export function BulkActionBar({
   const bulk = useBulkAction(pipelineId);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [tagInput, setTagInput] = useState("");
-
-  // Esc to clear selection
-  useEffect(() => {
-    if (selectedIds.length === 0) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClear();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [selectedIds.length, onClear]);
-
-  if (selectedIds.length === 0) return null;
 
   const runMove = (stageId: string) => {
     bulk.mutate(
@@ -113,17 +102,7 @@ export function BulkActionBar({
 
   return (
     <>
-      {/* `w-fit` sozinho não tinha teto: seis itens (rótulo + 5 ações) numa
-          linha só passavam da largura da tela em qualquer smartphone e essa
-          barra `sticky` virava scroll horizontal da PÁGINA inteira — a barra
-          é `mx-auto`, então o excesso ficava invisível dos dois lados, não só
-          cortado. `max-w-[calc(100vw-2rem)]` + `flex-wrap` deixam a barra
-          quebrar em linhas em vez de vazar. */}
-      <div className="sticky bottom-4 z-30 mx-auto flex w-fit max-w-[calc(100vw-2rem)] flex-wrap items-center justify-center gap-2 rounded-lg border border-border bg-surface px-3 py-2 shadow-md">
-        <span className="text-sm font-medium">
-          {selectedIds.length} selecionado{selectedIds.length > 1 ? "s" : ""}
-        </span>
-
+      <SelectionToolbar count={selectedIds.length} onClear={onClear}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button size="sm" variant="outline" disabled={bulk.isPending}>
@@ -190,11 +169,7 @@ export function BulkActionBar({
         >
           Excluir
         </Button>
-
-        <Button size="sm" variant="ghost" onClick={onClear}>
-          Cancelar
-        </Button>
-      </div>
+      </SelectionToolbar>
 
       <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <DialogContent>

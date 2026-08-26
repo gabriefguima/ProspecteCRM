@@ -22,6 +22,10 @@ interface Props {
   orderBy: ContactOrderBy;
   orderDir: "asc" | "desc";
   onSort: (column: ContactOrderBy) => void;
+  /** Seleção em lote (checkbox) — opcional; sem ela a coluna nem aparece. */
+  checkedIds?: Set<string>;
+  onToggleCheck?: (id: string) => void;
+  onToggleAll?: (ids: string[]) => void;
 }
 
 function displayName(c: Contact): string {
@@ -82,11 +86,33 @@ function SortableHead({
   );
 }
 
-export function ContactsTable({ contacts, orderBy, orderDir, onSort }: Props) {
+export function ContactsTable({
+  contacts,
+  orderBy,
+  orderDir,
+  onSort,
+  checkedIds,
+  onToggleCheck,
+  onToggleAll,
+}: Props) {
+  const showSelection = Boolean(onToggleCheck && onToggleAll);
+  const allChecked = contacts.length > 0 && contacts.every((c) => checkedIds?.has(c.id));
+
   return (
     <Table>
       <TableHeader>
         <TableRow>
+          {showSelection && (
+            <TableHead className="w-[40px]">
+              <input
+                type="checkbox"
+                checked={allChecked}
+                onChange={() => onToggleAll?.(allChecked ? [] : contacts.map((c) => c.id))}
+                aria-label="Selecionar todos os contatos desta página"
+                className="h-4 w-4 cursor-pointer accent-accent"
+              />
+            </TableHead>
+          )}
           <SortableHead
             label="Nome"
             column="display_name"
@@ -125,6 +151,17 @@ export function ContactsTable({ contacts, orderBy, orderDir, onSort }: Props) {
       <TableBody>
         {contacts.map((c) => (
           <TableRow key={c.id} className="cursor-pointer">
+            {showSelection && (
+              <TableCell>
+                <input
+                  type="checkbox"
+                  checked={checkedIds?.has(c.id) ?? false}
+                  onChange={() => onToggleCheck?.(c.id)}
+                  aria-label={`Selecionar ${displayName(c)}`}
+                  className="h-4 w-4 cursor-pointer accent-accent"
+                />
+              </TableCell>
+            )}
             <TableCell className="font-medium">
               <Link href={`/app/contacts/${c.id}`} className="hover:underline">
                 {displayName(c)}

@@ -332,6 +332,12 @@ export const AUDIT_ACTIONS = [
   // demais para a chamada seguinte do expurgo alcançar — a trilha registra
   // a própria erosão em vez de encolher sem deixar marca.
   "retention.sweep_run",
+
+  // Bulk de conversas (seleção múltipla no Inbox) — uma linha por chamada,
+  // com a contagem no metadata, mesmo padrão de "lead.bulk_action".
+  "conversation.bulk_status_changed",
+  "conversation.bulk_tagged",
+  "contact.bulk_tagged",
 ] as const;
 
 /** Um código de auditoria. Derivado de `AUDIT_ACTIONS` — não redigite a lista. */

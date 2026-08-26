@@ -21,6 +21,9 @@ interface Props {
   clientFilter?: (c: ConversationWithContact) => boolean;
   /** Notifies parent when the visible list changes (used by keyboard nav). */
   onVisibleChange?: (ids: string[]) => void;
+  /** Seleção em lote (checkbox) — independente de `selectedId`/`onSelect`. */
+  checkedIds?: Set<string>;
+  onToggleCheck?: (id: string) => void;
 }
 
 export function ConversationList({
@@ -30,6 +33,8 @@ export function ConversationList({
   onSelect,
   clientFilter,
   onVisibleChange,
+  checkedIds,
+  onToggleCheck,
 }: Props) {
   // Só mostra POR ONDE a conversa entrou quando há mais de um número. Com um
   // só, o rótulo seria a mesma palavra em toda linha — ruído que ensina o olho
@@ -105,6 +110,8 @@ export function ConversationList({
             onSelect={onSelect}
             queuePosition={isQueue ? i + 1 : undefined}
             mostrarCanal={maisDeUmCanal}
+            isChecked={checkedIds?.has(c.id)}
+            onToggleCheck={onToggleCheck}
           />
         ))}
         {q.hasNextPage && (

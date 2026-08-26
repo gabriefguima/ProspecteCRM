@@ -56,6 +56,20 @@ export const contactPatchSchema = contactCreateSchema.partial().extend({
 });
 export type ContactPatch = z.infer<typeof contactPatchSchema>;
 
+/**
+ * POST /api/v1/contacts/bulk — mesmo molde de bulkLeadActionSchema. Só a
+ * ação `tag` no MVP (exportar e bloquear em massa exigem capacidade que não
+ * existe hoje nem no single-item — ver plano de seleção múltipla).
+ */
+export const bulkContactActionSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("tag"),
+    contact_ids: z.array(z.string().uuid()).min(1).max(50),
+    params: z.object({ add: z.array(z.string()).min(1) }),
+  }),
+]);
+export type BulkContactActionInput = z.infer<typeof bulkContactActionSchema>;
+
 export const CONTACT_ORDER_BY = [
   "last_activity_at",
   "created_at",

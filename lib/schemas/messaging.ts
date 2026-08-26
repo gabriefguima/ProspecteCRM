@@ -140,6 +140,32 @@ export const patchConversationSchema = z
 
 export type PatchConversationInput = z.infer<typeof patchConversationSchema>;
 
+/**
+ * POST /api/v1/conversations/bulk — mesmo molde de bulkLeadActionSchema
+ * (lib/schemas/leads.ts): discriminada por `action`, até 50 ids por chamada.
+ * `set_status` só aceita os dois desfechos terminais (fechar/arquivar) — não
+ * é um atalho para claim/release, que têm efeito colateral de dono e ficam
+ * de fora do bulk por ora.
+ */
+export const bulkConversationActionSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("set_status"),
+    conversation_ids: z.array(z.string().uuid()).min(1).max(50),
+    params: z.object({ status: z.enum(["closed", "archived"]) }),
+  }),
+  z.object({
+    action: z.literal("tag"),
+    conversation_ids: z.array(z.string().uuid()).min(1).max(50),
+    params: z.object({ add: z.array(conversationTagSchema).min(1) }),
+  }),
+  z.object({
+    action: z.literal("mark_read"),
+    conversation_ids: z.array(z.string().uuid()).min(1).max(50),
+    params: z.object({}).optional(),
+  }),
+]);
+export type BulkConversationActionInput = z.infer<typeof bulkConversationActionSchema>;
+
 /** POST /conversations/open-with-contact — abrir inbox a partir de cartão de contato. */
 export const openConversationWithContactSchema = z
   .object({

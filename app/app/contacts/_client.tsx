@@ -14,7 +14,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useContactList } from "@/hooks/contacts/useContactList";
+import { useSelection } from "@/hooks/selection/useSelection";
 import { ContactsTable } from "@/components/contacts/ContactsTable";
+import { ContactsBulkActionBar } from "@/components/contacts/ContactsBulkActionBar";
 import { NewContactDialog } from "@/components/contacts/NewContactDialog";
 import { ImportContactsDialog } from "@/components/contacts/ImportContactsDialog";
 import { EmptyContacts } from "@/components/empty";
@@ -40,6 +42,7 @@ export function ContactsListClient() {
   const [limit, setLimit] = useState<number>(25);
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const selection = useSelection();
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput), 250);
@@ -213,8 +216,12 @@ export function ContactsListClient() {
               orderBy={orderBy}
               orderDir={orderDir}
               onSort={handleSort}
+              checkedIds={new Set(selection.selectedIds)}
+              onToggleCheck={selection.toggle}
+              onToggleAll={selection.selectAll}
             />
           </Card>
+          <ContactsBulkActionBar selectedIds={selection.selectedIds} onClear={selection.clear} />
           <div className="flex flex-col items-center gap-2 sm:flex-row sm:justify-between">
             <p className="text-sm text-muted-foreground">
               {allContacts.length} contato{allContacts.length === 1 ? "" : "s"}

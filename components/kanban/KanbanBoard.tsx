@@ -8,6 +8,7 @@ import { useMoveCard } from "@/hooks/kanban/useMoveCard";
 import { useAssignableMembers } from "@/hooks/inbox/useAssignableMembers";
 import { useAtRiskLeads } from "@/hooks/leads/useAtRiskLeads";
 import { useReactivations } from "@/hooks/leads/useReactivations";
+import { useSelection } from "@/hooks/selection/useSelection";
 import { midpoint } from "@/lib/kanban/fractional-indexing";
 import type { Lead } from "@/lib/types/leads";
 import type { Pipeline, Stage } from "@/lib/kanban/types";
@@ -114,10 +115,10 @@ export function KanbanBoard({
   // O dossiê é do BOARD e não da página: ele precisa do lead inteiro e do nome
   // do estágio, que só existem aqui depois do agrupamento.
   const [dossieId, setDossieId] = useState<string | null>(null);
-  const [internalSelected, setInternalSelected] = useState<Set<string>>(new Set());
+  const internalSelection = useSelection();
   const selectedLeadIds = useMemo(
-    () => (selectedIds ? new Set(selectedIds) : internalSelected),
-    [selectedIds, internalSelected],
+    () => (selectedIds ? new Set(selectedIds) : new Set(internalSelection.selectedIds)),
+    [selectedIds, internalSelection.selectedIds],
   );
 
   const data = useExternal
@@ -141,24 +142,17 @@ export function KanbanBoard({
   }, [data]);
 
   const handleSelect = useCallback(
-    (leadId: string, additive: boolean) => {
-      const apply = (prev: Set<string>): Set<string> => {
-        const next = new Set(additive ? prev : []);
-        if (additive && prev.has(leadId)) {
-          next.delete(leadId);
-        } else {
-          next.add(leadId);
-        }
-        return next;
-      };
+    (leadId: string) => {
       if (onSelectionChange) {
-        const nextSet = apply(selectedLeadIds);
-        onSelectionChange(Array.from(nextSet));
+        const next = new Set(selectedLeadIds);
+        if (next.has(leadId)) next.delete(leadId);
+        else next.add(leadId);
+        onSelectionChange(Array.from(next));
       } else {
-        setInternalSelected((prev) => apply(prev));
+        internalSelection.toggle(leadId);
       }
     },
-    [onSelectionChange, selectedLeadIds],
+    [onSelectionChange, selectedLeadIds, internalSelection],
   );
 
   const handleDragEnd = useCallback(

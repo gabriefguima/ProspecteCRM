@@ -22,7 +22,7 @@ interface StageColumnProps {
   selectedLeadIds?: Set<string>;
   /** leadId → quantos eventos remotos já chegaram (muda = pulsa de novo). */
   pulses?: Map<string, number>;
-  onSelect?: (leadId: string, additive: boolean) => void;
+  onSelect?: (leadId: string) => void;
   /** Abrir o dossiê — atravessa o board até o card, como `pulses`. */
   onOpen?: (leadId: string) => void;
 }
