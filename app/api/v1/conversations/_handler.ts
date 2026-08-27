@@ -28,6 +28,27 @@ const SELECT_COLS = `
   channel_sessions:channel_session_id (phone_number, display_name, provider)
 `;
 
+/**
+ * Mesma projeção, mas com o embed de `contacts` como INNER JOIN.
+ *
+ * Só usada quando `q.search` está presente: filtrar por coluna de uma tabela
+ * embutida (`contacts.display_name.ilike...`) só restringe as linhas de FORA
+ * quando o embed é `!inner` — com o embed padrão (LEFT-like) o PostgREST
+ * filtra só o objeto aninhado retornado, não quais conversas aparecem. Fora do
+ * caminho de busca continua sendo o embed padrão: conversa de grupo ou sem
+ * contato resolvido não pode sumir da lista por causa disso.
+ */
+const SELECT_COLS_BUSCA = `
+  id, organization_id, contact_id, channel_session_id, channel, status,
+  status_changed_at, assigned_to_user_id, assignee_kind, assigned_at, last_inbound_at,
+  last_outbound_at, last_message_at, last_message_preview,
+  unread_count_for_assignee, is_group, group_chat_id, tags, metadata,
+  snooze_until, created_at, updated_at,
+  bot_silenced_until, last_handoff_at,
+  contacts:contact_id!inner (id, display_name, name, phone_number, is_anonymized, tags, is_blocked, avatar_storage_path, force_human),
+  channel_sessions:channel_session_id (phone_number, display_name, provider)
+`;
+
 interface CursorPayload {
   sort: string | null;
   id: string;
@@ -92,9 +113,12 @@ export async function listConversationsHandler(
   const sortCol = isQueue ? "last_inbound_at" : "last_message_at";
   const asc = isQueue;
 
+  // Com busca, o embed de contacts precisa ser !inner (ver SELECT_COLS_BUSCA) —
+  // senão o filtro por nome/telefone do contato não restringe as conversas
+  // retornadas, só o objeto aninhado.
   let query = supabase
     .from("conversations")
-    .select(SELECT_COLS)
+    .select(q.search ? SELECT_COLS_BUSCA : SELECT_COLS)
     .eq("organization_id", ctx.organization_id)
     .order(sortCol, { ascending: asc, nullsFirst: false })
     .order("id", { ascending: asc })
@@ -128,8 +152,20 @@ export async function listConversationsHandler(
   }
 
   if (q.search) {
+    // Busca por nome/telefone do contato OU texto da última mensagem — não só
+    // a mensagem. "Buscar Renata" tem que achar a conversa da Renata mesmo que
+    // a palavra nunca apareça no texto trocado (defeito medido: a versão
+    // anterior só olhava `last_message_preview`, e quem procurava por nome de
+    // cliente nunca achava nada).
     const s = q.search.trim().replace(/[%_]/g, (m) => `\\${m}`);
-    query = query.ilike("last_message_preview", `%${s}%`);
+    query = query.or(
+      [
+        `last_message_preview.ilike.%${s}%`,
+        `contacts.display_name.ilike.%${s}%`,
+        `contacts.name.ilike.%${s}%`,
+        `contacts.phone_number.ilike.%${s}%`,
+      ].join(","),
+    );
   }
 
   if (q.cursor) {
