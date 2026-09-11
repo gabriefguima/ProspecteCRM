@@ -5,6 +5,11 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { ok, fail } from "@/lib/api/wrappers";
 import { audit } from "@/lib/audit";
 import { randomUUID } from "node:crypto";
+import { env } from "@/lib/env";
+import { signInviteToken, INVITE_TTL_SECONDS } from "@/lib/auth/invite-token";
+import { buildInviteEmail } from "@/lib/email/templates/invite";
+import { sendEmail } from "@/lib/email/resend";
+import { marcaDaSaida } from "@/lib/branding/saida";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -238,8 +243,78 @@ export async function POST(req: NextRequest) {
     },
   });
 
+  // Cria a org mas ninguém é membro dela ainda — sem isto o tenant fica órfão
+  // (nem o dono, nem o platform admin que o criou, conseguem entrar). Reusa o
+  // mesmo token stateless de `/api/v1/team/invite`; a membership nasce em
+  // /accept-invite, não aqui.
+  const ownerEmail = owner_email.trim().toLowerCase();
+  const inviteId = randomUUID();
+  const exp = Math.floor(Date.now() / 1000) + INVITE_TTL_SECONDS;
+  const token = signInviteToken({
+    invite_id: inviteId,
+    email: ownerEmail,
+    organization_id: org.id,
+    role: "admin",
+    exp,
+  });
+  const baseUrl = env.NEXT_PUBLIC_APP_URL;
+  const acceptUrl = `${baseUrl.replace(/\/$/, "")}/team/accept-invite/${token}`;
+  const expiresAt = new Date(exp * 1000);
+  const inviterName =
+    (adminCtx.user.user_metadata?.full_name as string | undefined) ??
+    adminCtx.user.email ??
+    "Um administrador da plataforma";
+  const marca = await marcaDaSaida(org.id);
+  const { subject, html, text } = buildInviteEmail({
+    inviterName,
+    orgName: org.display_name,
+    acceptUrl,
+    role: "admin",
+    expiresAt,
+    marca,
+  });
+  const emailResult = await sendEmail({
+    to: ownerEmail,
+    subject,
+    html,
+    text,
+    fromName: marca.nome,
+    tags: [
+      { name: "kind", value: "tenant_owner_invite" },
+      { name: "org", value: org.id },
+    ],
+  });
+
+  void audit({
+    action: "member.invited",
+    actorUserId: adminCtx.user.id,
+    actingAsPlatformAdmin: true,
+    bypassedRls: true,
+    organizationId: org.id,
+    resourceType: "membership",
+    resourceId: inviteId,
+    requestId,
+    metadata: {
+      email: ownerEmail,
+      role: "admin",
+      email_dispatched: emailResult.ok,
+      email_error: emailResult.ok ? null : (emailResult.error ?? null),
+      source: "tenant_creation",
+    },
+  });
+
   return ok(
-    { id: org.id, slug: org.slug, display_name: org.display_name },
+    {
+      id: org.id,
+      slug: org.slug,
+      display_name: org.display_name,
+      owner_invite: {
+        email: ownerEmail,
+        accept_url: acceptUrl,
+        expires_at: expiresAt.toISOString(),
+        email_dispatched: emailResult.ok,
+      },
+    },
     { status: 201, requestId },
   );
 }
