@@ -7,7 +7,7 @@
  * (cookie de sessão vai junto por ser same-origin; RLS decide o acesso).
  */
 import { randomUUID } from "node:crypto";
-import { NextResponse, type NextRequest } from "next/server";
+import { type NextRequest } from "next/server";
 
 import { fail } from "@/lib/api/wrappers";
 import { loadAuthUser, resolveActiveOrg } from "@/lib/auth/server";
@@ -25,6 +25,17 @@ import { createClient } from "@/lib/supabase/server";
 export const dynamic = "force-dynamic";
 
 const SIGNED_URL_TTL_S = 3600;
+
+/**
+ * Quanto o browser guarda o próprio redirect (mesmo padrão de
+ * contacts/[id]/avatar/route.ts). Sem isto, toda vez que a conversa reabre ou
+ * rola, esta rota inteira roda de novo — sessão, org ativa, SELECT em
+ * `messages` e `createSignedUrl` — e o browser baixa a mídia de novo do zero,
+ * porque cada signed URL é assinada com um token diferente. Menor que
+ * SIGNED_URL_TTL_S de propósito: um redirect cacheado que aponte pra uma
+ * assinatura já vencida quebraria a mídia.
+ */
+const BROWSER_CACHE_SECONDS = 3300;
 
 interface RouteCtx {
   params: Promise<{ id: string }>;
@@ -69,9 +80,16 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
       .from("whatsapp-media")
       .createSignedUrl(msg.media_storage_path, SIGNED_URL_TTL_S);
     if (!signErr && signed?.signedUrl) {
-      const response = NextResponse.redirect(signed.signedUrl, 302);
-      response.headers.set("X-Request-Id", requestId);
-      return response;
+      // Response bruto, não NextResponse.redirect(): o helper devolve headers
+      // imutáveis, e Cache-Control anexado depois é ignorado silenciosamente.
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: signed.signedUrl,
+          "Cache-Control": `private, max-age=${BROWSER_CACHE_SECONDS}`,
+          "X-Request-Id": requestId,
+        },
+      });
     }
     if (signErr) {
       console.error("[messages.media] createSignedUrl failed", signErr.message);

@@ -1431,6 +1431,10 @@ esac
   printf '# OpenAI: transcrição dos áudios do WhatsApp (Whisper) + embeddings do RAG.\n'
   printf '# Opcional — sem ela a IA responde sem a base e pede o áudio em texto.\n'
   envq OPENAI_API_KEY "${OPENAI_API_KEY:-}"
+  printf '# Transcrição de áudio LOCAL (serviço whisper do compose, faster-whisper via\n'
+  printf '# speaches) — sem cota paga. Preenchido = tem PRIORIDADE sobre OPENAI_API_KEY\n'
+  printf '# pra transcrição. Vazio = comportamento de sempre.\n'
+  envq WHISPER_BASE_URL "${WHISPER_BASE_URL:-}"
   printf '# Telemetria de erros (você escolheu isto durante a instalação).\n'
   printf '#   "off"  = não envia nada.\n'
   printf '#   vazio  = só ERRO pro Sentry da comunidade, com CPF/telefone/e-mail\n'
