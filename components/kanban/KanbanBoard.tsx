@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DragDropContext, type DropResult } from "@hello-pangea/dnd";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -124,6 +124,75 @@ export function KanbanBoard({
   // do estágio, que só existem aqui depois do agrupamento.
   const [dossieId, setDossieId] = useState<string | null>(null);
   const internalSelection = useSelection();
+
+  // Arrastar o FUNDO do board rola horizontalmente entre pipelines/estágios,
+  // como no Trello — antes só dava pra rolar pela scrollbar ou gesto de
+  // trackpad. `panState` é ref (não state): a cada pixel de mousemove
+  // re-renderizar o board inteiro seria caro à toa, e nada aqui precisa
+  // disparar render — só mexe em `scrollLeft` e no cursor do documento.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const panState = useRef<{ startX: number; startScrollLeft: number; dragging: boolean } | null>(
+    null,
+  );
+  // Guarda o cleanup do arrasto em curso pro efeito de desmontagem conseguir
+  // chamá-lo — sem isto, navegar pra outra tela NO MEIO do pan (solta o botão
+  // já em outra rota) deixava os listeners da window pendurados e o cursor
+  // travado em "grabbing" pro resto da sessão.
+  const panCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    return () => panCleanupRef.current?.();
+  }, []);
+
+  const onBoardMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return; // só botão esquerdo do mouse
+    const container = scrollRef.current;
+    if (!container) return;
+
+    // Não inicia o pan em cima de um card (nem de nada clicável dentro dele) —
+    // o @hello-pangea/dnd já escuta mousedown no handle do card pra arrastar
+    // ELE; os dois gestos brigariam pelo mesmo clique. `closest` sobe até o
+    // ancestral que carrega o atributo que a lib marca no handle.
+    const target = e.target as HTMLElement;
+    if (
+      target.closest(
+        '[data-rbd-drag-handle-draggable-id], button, a, input, textarea, select, [role="button"]',
+      )
+    ) {
+      return;
+    }
+
+    e.preventDefault(); // barra a seleção de texto nativa desde o primeiro pixel
+    panState.current = { startX: e.clientX, startScrollLeft: container.scrollLeft, dragging: false };
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const state = panState.current;
+      if (!state) return;
+      const delta = ev.clientX - state.startX;
+      // Só vira "arrasto" depois de um limiar pequeno — um clique simples no
+      // fundo (sem soltar o mouse no mesmo lugar) não deve mudar o cursor nem
+      // mexer no scroll por 1px de tremor da mão.
+      if (!state.dragging) {
+        if (Math.abs(delta) < 4) return;
+        state.dragging = true;
+        document.body.style.cursor = "grabbing";
+      }
+      container.scrollLeft = state.startScrollLeft - delta;
+    };
+
+    const cleanup = () => {
+      document.body.style.cursor = "";
+      panState.current = null;
+      panCleanupRef.current = null;
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+    const onMouseUp = cleanup;
+    panCleanupRef.current = cleanup;
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }, []);
   const selectedLeadIds = useMemo(
     () => (selectedIds ? new Set(selectedIds) : new Set(internalSelection.selectedIds)),
     [selectedIds, internalSelection.selectedIds],
@@ -232,7 +301,11 @@ export function KanbanBoard({
 
   return (
     <DragDropContext onDragEnd={handleDragEnd}>
-      <div className="flex h-full gap-3 overflow-x-auto p-4">
+      <div
+        ref={scrollRef}
+        onMouseDown={onBoardMouseDown}
+        className="flex h-full cursor-grab gap-3 overflow-x-auto p-4"
+      >
         {data.stages.map((stage) => (
           <StageColumn
             key={stage.id}
