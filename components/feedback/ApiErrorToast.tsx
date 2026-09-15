@@ -64,10 +64,20 @@ const COPY: Record<string, { variant: Variant; msg: string }> = {
   },
 };
 
+/**
+ * `id` fixo por código de erro: o sonner ATUALIZA um toast existente com o
+ * mesmo id em vez de empilhar outro por cima. Sem isto, um soluço de rede que
+ * derruba várias queries de uma vez (reconexão do Realtime, volta de foco na
+ * aba, pool do Supabase sob carga) gerava um toast POR QUERY — o "monte de
+ * popup de erro inesperado" relatado em produção, tudo ao mesmo tempo.
+ * Códigos diferentes mantêm ids diferentes, então erros genuinamente
+ * distintos ainda aparecem cada um o seu.
+ */
 export function showApiError(err: unknown): void {
   if (err instanceof ApiError) {
     const entry = COPY[err.code];
     const description = err.requestId ? `ID: ${err.requestId}` : undefined;
+    const id = `api-error-${err.code}`;
     if (entry) {
       const fn =
         entry.variant === "warning"
@@ -75,13 +85,13 @@ export function showApiError(err: unknown): void {
           : entry.variant === "info"
             ? toast.info
             : toast.error;
-      fn(entry.msg, { description });
+      fn(entry.msg, { description, id });
       return;
     }
-    toast.error(err.message || err.code, { description });
+    toast.error(err.message || err.code, { description, id });
     return;
   }
-  toast.error("Erro inesperado. Tente novamente.");
+  toast.error("Erro inesperado. Tente novamente.", { id: "api-error-network" });
 }
 
 export function useApiErrorHandler(): (err: unknown) => void {

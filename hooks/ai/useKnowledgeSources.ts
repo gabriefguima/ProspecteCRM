@@ -43,7 +43,6 @@ export function useKnowledgeSources(
         const res = await apiClient.get<ListResponse>("/api/v1/ai/knowledge/sources");
         return (res.data ?? []).filter((s) => s.agent_id === agentId);
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

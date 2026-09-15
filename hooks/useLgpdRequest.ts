@@ -1,7 +1,6 @@
 "use client";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { showApiError } from "@/components/feedback/ApiErrorToast";
 import type { LgpdRequest } from "@/hooks/useLgpdRequests";
 
 export interface AuditTrailEntry {
@@ -36,7 +35,6 @@ export function useLgpdRequest(id: string) {
           `/api/v1/lgpd/requests/${id}`,
         );
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },
