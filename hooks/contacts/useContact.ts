@@ -1,7 +1,6 @@
 "use client";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { showApiError } from "@/components/feedback/ApiErrorToast";
 import type { Contact } from "@/lib/types/contacts";
 
 interface ContactResponse {
@@ -17,7 +16,6 @@ export function useContact(id: string) {
       try {
         return await apiClient.get<ContactResponse>(`/api/v1/contacts/${id}`);
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

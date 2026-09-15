@@ -38,7 +38,6 @@ export function useFollowupFlow(id: string, opts?: { initialData?: FollowupFlowD
         const res = await apiClient.get<SingleResponse>(`/api/v1/ai/followup-flows/${id}`);
         return res.data;
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

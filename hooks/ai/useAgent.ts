@@ -51,7 +51,6 @@ export function useAgent(id: string, opts?: { initialData?: AgentRow }) {
         const res = await apiClient.get<SingleResponse>(`/api/v1/ai/agents/${id}`);
         return res.data;
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

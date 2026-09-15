@@ -4,7 +4,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { useRealtimeChannel } from "@/hooks/realtime/useRealtimeChannel";
 import { apiClient } from "@/lib/api/client";
-import { showApiError } from "@/components/feedback/ApiErrorToast";
 import type { Note } from "@/lib/types/messaging";
 
 /** Onda 5.2: notas internas da conversa (poucas por conversa — query simples, sem paginação). */
@@ -22,7 +21,6 @@ export function useConversationNotes(conversationId: string | null) {
           `/api/v1/conversations/${conversationId}/notes`,
         );
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

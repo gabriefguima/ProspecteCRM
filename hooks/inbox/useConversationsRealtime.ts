@@ -4,7 +4,6 @@ import { useCallback } from "react";
 import { useRealtimeChannel } from "@/hooks/realtime/useRealtimeChannel";
 import { useRefetchDeSeguranca } from "@/hooks/realtime/useRefetchDeSeguranca";
 import { apiClient } from "@/lib/api/client";
-import { showApiError } from "@/components/feedback/ApiErrorToast";
 import type { Conversation } from "@/lib/types/messaging";
 import type { ComandoDoBanco } from "@/lib/inbox/comando-da-conversa";
 
@@ -136,7 +135,6 @@ export function useConversationsRealtime(
       try {
         return await apiClient.get<ListResponse>(`/api/v1/conversations?${qs.toString()}`);
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

@@ -1,7 +1,6 @@
 "use client";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { showApiError } from "@/components/feedback/ApiErrorToast";
 import { PROVEDORES } from "@/lib/ai/pontos/provedores";
 
 /**
@@ -40,7 +39,6 @@ export function useCredentialsList(opts?: { initialData?: CredentialRow[] }) {
         const res = await apiClient.get<ListResponse>("/api/v1/ai/credentials");
         return res.data;
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

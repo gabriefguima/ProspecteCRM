@@ -4,7 +4,6 @@ import { useCallback } from "react";
 import { useRealtimeChannel } from "@/hooks/realtime/useRealtimeChannel";
 import { useRefetchDeSeguranca } from "@/hooks/realtime/useRefetchDeSeguranca";
 import { apiClient } from "@/lib/api/client";
-import { showApiError } from "@/components/feedback/ApiErrorToast";
 import type { Message } from "@/lib/types/messaging";
 
 interface MessagesResponse {
@@ -32,7 +31,6 @@ export function useMessagesRealtime(conversationId: string | null) {
           `/api/v1/conversations/${conversationId}/messages?${qs.toString()}`,
         );
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

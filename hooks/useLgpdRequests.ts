@@ -1,7 +1,6 @@
 "use client";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { showApiError } from "@/components/feedback/ApiErrorToast";
 
 export type LgpdRequestStatus =
   | "received"
@@ -68,7 +67,6 @@ export function useLgpdRequests(filters: LgpdRequestsFilters = {}) {
           `/api/v1/lgpd/requests?${qs.toString()}`,
         );
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

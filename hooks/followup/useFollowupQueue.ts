@@ -68,7 +68,6 @@ export function useFollowupQueue(filters: FollowupQueueFilters = {}) {
       try {
         return await apiClient.get<ListResponse>(`/api/v1/ai/followups/queue?${qs.toString()}`);
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

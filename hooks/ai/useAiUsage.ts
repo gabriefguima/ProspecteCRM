@@ -1,7 +1,6 @@
 "use client";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { showApiError } from "@/components/feedback/ApiErrorToast";
 import type { UsagePayload } from "@/lib/ai/usage/aggregate";
 
 export interface AiUsageFilters {
@@ -38,7 +37,6 @@ export function useAiUsage(filters: AiUsageFilters) {
         );
         return res.data;
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

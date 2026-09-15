@@ -1,7 +1,6 @@
 "use client";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { showApiError } from "@/components/feedback/ApiErrorToast";
 import type { TimelineItemView } from "@/lib/types/contacts";
 
 interface TimelineResponse {
@@ -26,7 +25,6 @@ export function useTimeline(contactId: string, types?: string[]) {
           `/api/v1/contacts/${contactId}/timeline?${qs.toString()}`,
         );
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

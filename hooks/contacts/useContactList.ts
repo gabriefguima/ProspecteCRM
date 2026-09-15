@@ -1,7 +1,6 @@
 "use client";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { showApiError } from "@/components/feedback/ApiErrorToast";
 import type { ContactOrderBy } from "@/lib/schemas/contacts";
 import type { Contact } from "@/lib/types/contacts";
 
@@ -35,7 +34,6 @@ export function useContactList(filters: ContactListFilters) {
       try {
         return await apiClient.get<ListResponse>(`/api/v1/contacts?${qs.toString()}`);
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

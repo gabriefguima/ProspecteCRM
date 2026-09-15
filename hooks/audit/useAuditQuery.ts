@@ -1,7 +1,6 @@
 "use client";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { showApiError } from "@/components/feedback/ApiErrorToast";
 
 export interface AuditEntry {
   id: string;
@@ -47,7 +46,6 @@ export function useAuditQuery(filters: AuditFilters) {
       try {
         return await apiClient.get<ListResponse>(`/api/v1/audit?${qs.toString()}`);
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

@@ -57,7 +57,6 @@ export function useKnowledgeSources(opts?: { initialData?: SourceRow[] }) {
         const res = await apiClient.get<ListResponse>("/api/v1/ai/knowledge/sources");
         return res.data ?? [];
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },

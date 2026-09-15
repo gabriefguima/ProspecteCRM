@@ -107,6 +107,18 @@ describe("ApiErrorToast", () => {
   it("calls toast.error with generic message for non-ApiError", () => {
     showApiError(new Error("oops"));
     expect(toast.error).toHaveBeenCalledTimes(1);
-    expect(toast.error).toHaveBeenCalledWith("Erro inesperado. Tente novamente.");
+    expect(toast.error).toHaveBeenCalledWith(
+      "Erro inesperado. Tente novamente.",
+      expect.objectContaining({ id: "api-error-network" }),
+    );
+  });
+
+  it("dedupes: same error code reuses the same toast id instead of stacking", () => {
+    showApiError(new ApiError(500, "internal_error", undefined, "req-a"));
+    showApiError(new ApiError(500, "internal_error", undefined, "req-b"));
+    expect(toast.error).toHaveBeenCalledTimes(2);
+    const calls = vi.mocked(toast.error).mock.calls;
+    expect(calls[0]?.[1]).toMatchObject({ id: "api-error-internal_error" });
+    expect(calls[1]?.[1]).toMatchObject({ id: "api-error-internal_error" });
   });
 });

@@ -35,7 +35,6 @@ export function useAiBudget(opts?: { initialData?: BudgetStatus }) {
         const res = await apiClient.get<SingleResponse>("/api/v1/ai/budget");
         return res.data;
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },
