@@ -1,7 +1,6 @@
 "use client";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
-import { showApiError } from "@/components/feedback/ApiErrorToast";
 import type { AgentRow } from "./useAgent";
 
 interface ListResponse {
@@ -18,7 +17,6 @@ export function useAgentsList(opts?: { initialData?: AgentRow[] }) {
         const res = await apiClient.get<ListResponse>("/api/v1/ai/agents");
         return res.data;
       } catch (err) {
-        showApiError(err);
         throw err;
       }
     },
