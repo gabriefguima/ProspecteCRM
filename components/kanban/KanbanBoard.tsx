@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DragDropContext, type DropResult } from "@hello-pangea/dnd";
 import { useT } from "@/hooks/i18n/useT";
 import { Card } from "@/components/ui/card";
@@ -57,7 +57,7 @@ function BoardSkeleton() {
       {[0, 1, 2].map((c) => (
         <div
           key={c}
-          className="flex w-80 shrink-0 flex-col gap-2 rounded-lg border border-border bg-surface-muted/40 p-3"
+          className="bg-surface-muted/40 flex w-80 shrink-0 flex-col gap-2 rounded-lg border border-border p-3"
         >
           <Skeleton className="h-5 w-32" />
           {[0, 1, 2, 3].map((i) => (
@@ -126,6 +126,63 @@ export function KanbanBoard({
   // aberto, o estado local manda (fechar não reabre pela URL).
   const [dossieId, setDossieId] = useState<string | null>(leadInicial ?? null);
   const [internalSelected, setInternalSelected] = useState<Set<string>>(new Set());
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const panState = useRef<{ startX: number; startScrollLeft: number; dragging: boolean } | null>(
+    null,
+  );
+  const panCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    return () => panCleanupRef.current?.();
+  }, []);
+
+  const onBoardMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const container = scrollRef.current;
+    if (!container) return;
+
+    const target = e.target as HTMLElement;
+    if (
+      target.closest(
+        '[data-rbd-drag-handle-draggable-id], button, a, input, textarea, select, [role="button"]',
+      )
+    ) {
+      return;
+    }
+
+    e.preventDefault();
+    panState.current = {
+      startX: e.clientX,
+      startScrollLeft: container.scrollLeft,
+      dragging: false,
+    };
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const state = panState.current;
+      if (!state) return;
+      const delta = ev.clientX - state.startX;
+      if (!state.dragging) {
+        if (Math.abs(delta) < 4) return;
+        state.dragging = true;
+        document.body.style.cursor = "grabbing";
+      }
+      container.scrollLeft = state.startScrollLeft - delta;
+    };
+
+    const cleanup = () => {
+      document.body.style.cursor = "";
+      panState.current = null;
+      panCleanupRef.current = null;
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+    const onMouseUp = cleanup;
+    panCleanupRef.current = cleanup;
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }, []);
   const selectedLeadIds = useMemo(
     () => (selectedIds ? new Set(selectedIds) : internalSelected),
     [selectedIds, internalSelected],
@@ -142,9 +199,7 @@ export function KanbanBoard({
   const isError = useExternal ? false : queryResult.isError;
   const error = useExternal ? null : queryResult.error;
 
-  const leadDoDossie = dossieId
-    ? (data?.leads.find((l) => l.id === dossieId) ?? null)
-    : null;
+  const leadDoDossie = dossieId ? (data?.leads.find((l) => l.id === dossieId) ?? null) : null;
 
   const grouped = useMemo(() => {
     if (!data) return null;
@@ -179,10 +234,7 @@ export function KanbanBoard({
       if (!data || !grouped) return;
       const { source, destination, draggableId } = result;
       if (!destination) return;
-      if (
-        source.droppableId === destination.droppableId &&
-        source.index === destination.index
-      ) {
+      if (source.droppableId === destination.droppableId && source.index === destination.index) {
         return;
       }
 
@@ -190,13 +242,10 @@ export function KanbanBoard({
       if (!lead) return;
 
       const destStageId = destination.droppableId;
-      const destList = (grouped.get(destStageId) ?? []).filter(
-        (l) => l.id !== draggableId,
-      );
+      const destList = (grouped.get(destStageId) ?? []).filter((l) => l.id !== draggableId);
 
       const before = destination.index > 0 ? destList[destination.index - 1] : null;
-      const after =
-        destination.index < destList.length ? destList[destination.index] : null;
+      const after = destination.index < destList.length ? destList[destination.index] : null;
 
       const newPosition = midpoint(
         before?.position_in_stage ?? null,
@@ -245,7 +294,12 @@ export function KanbanBoard({
 
   return (
     <DragDropContext onDragEnd={handleDragEnd}>
-      <div className="flex h-full gap-3 overflow-x-auto p-4">
+      <div
+        ref={scrollRef}
+        data-testid="kanban-board"
+        onMouseDown={onBoardMouseDown}
+        className="flex h-full cursor-grab gap-3 overflow-x-auto p-4"
+      >
         {data.stages.map((stage) => (
           <StageColumn
             key={stage.id}
@@ -270,9 +324,7 @@ export function KanbanBoard({
           lead={leadDoDossie}
           pipelineId={pipelineId}
           fieldDefs={camposDoFunil(data.pipeline.settings ?? null)}
-          stageName={
-            data.stages.find((s) => s.id === leadDoDossie.stage_id)?.name ?? "—"
-          }
+          stageName={data.stages.find((s) => s.id === leadDoDossie.stage_id)?.name ?? "—"}
           ownerNames={ownerNames}
         />
       )}

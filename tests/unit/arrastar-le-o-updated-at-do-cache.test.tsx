@@ -17,7 +17,7 @@
  * produzem, sem depender de arrastar pixels no jsdom.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, renderHook, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -208,7 +208,12 @@ describe("mexer no negócio e arrastar em seguida", () => {
       data: { id: LEAD, stage_id: "s-1", updated_at: DEPOIS_DA_EDICAO },
     });
     post.mockResolvedValue({
-      data: { id: LEAD, stage_id: "s-2", position_in_stage: 500, updated_at: "2026-09-15T12:00:09.000Z" },
+      data: {
+        id: LEAD,
+        stage_id: "s-2",
+        position_in_stage: 500,
+        updated_at: "2026-09-15T12:00:09.000Z",
+      },
     });
     await quadroMontado();
 
@@ -228,7 +233,14 @@ describe("mexer no negócio e arrastar em seguida", () => {
     post.mockImplementation(async (url: string) =>
       url.endsWith("/lose")
         ? { data: { id: LEAD, stage_id: "s-1", status: "lost", updated_at: DEPOIS_DA_EDICAO } }
-        : { data: { id: LEAD, stage_id: "s-2", position_in_stage: 500, updated_at: "2026-09-15T12:00:09.000Z" } },
+        : {
+            data: {
+              id: LEAD,
+              stage_id: "s-2",
+              position_in_stage: 500,
+              updated_at: "2026-09-15T12:00:09.000Z",
+            },
+          },
     );
     await quadroMontado();
 
@@ -248,7 +260,14 @@ describe("mexer no negócio e arrastar em seguida", () => {
     post.mockImplementation(async (url: string) =>
       url.endsWith("/win")
         ? { data: { id: LEAD, stage_id: "s-1", status: "won", updated_at: DEPOIS_DA_EDICAO } }
-        : { data: { id: LEAD, stage_id: "s-2", position_in_stage: 500, updated_at: "2026-09-15T12:00:09.000Z" } },
+        : {
+            data: {
+              id: LEAD,
+              stage_id: "s-2",
+              position_in_stage: 500,
+              updated_at: "2026-09-15T12:00:09.000Z",
+            },
+          },
     );
     await quadroMontado();
 
@@ -262,5 +281,21 @@ describe("mexer no negócio e arrastar em seguida", () => {
       `/api/v1/leads/${LEAD}/move`,
       expect.objectContaining({ expected_updated_at: DEPOIS_DA_EDICAO }),
     );
+  });
+});
+
+describe("arrastar o fundo do Kanban", () => {
+  it("rola horizontalmente sem iniciar o arrasto de um card", async () => {
+    const { getByTestId } = render(<KanbanBoard pipelineId={PIPELINE} />, { wrapper });
+    await waitFor(() => expect(capturado.onDragEnd).not.toBeNull());
+
+    const board = getByTestId("kanban-board");
+    Object.defineProperty(board, "scrollLeft", { value: 50, writable: true });
+
+    fireEvent.mouseDown(board, { button: 0, clientX: 100 });
+    fireEvent.mouseMove(window, { clientX: 70 });
+
+    expect(board.scrollLeft).toBe(80);
+    fireEvent.mouseUp(window);
   });
 });
