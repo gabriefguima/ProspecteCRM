@@ -78,8 +78,12 @@ fi
 
 # Controle POSITIVO do mesmo grep: se a URL local também não aparecesse, o
 # "não achei produção" acima não valeria nada — seria um grep que não acha nada.
+# Com Webpack, o valor pode ficar no artefato do servidor em vez de
+# `.next/static`; a busca positiva cobre a saída inteira. A negativa acima
+# continua limitada ao bundle do browser, que é onde uma URL de produção seria
+# perigosa.
 HOST_LOCAL="$(printf '%s' "$NEXT_PUBLIC_SUPABASE_URL" | sed -E 's#https?://##; s#/.*##')"
-if grep -rqF "$HOST_LOCAL" .next/static 2>/dev/null; then
+if grep -rqF "$HOST_LOCAL" .next 2>/dev/null; then
   echo "==> OK (controle): o host local ($HOST_LOCAL) ESTÁ no bundle — o grep está vivo."
 else
   echo "==> FALHOU (controle): o host local não aparece no bundle." >&2
