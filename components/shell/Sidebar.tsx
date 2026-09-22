@@ -123,7 +123,7 @@ export function SidebarContent({
           collapsed ? "justify-center" : "justify-start",
         )}
       >
-        {logo && !collapsed ? (
+        {logo ? (
           // A moldura clara vale SÓ para o logo enviado por quem hospeda. A arte
           // do produto (ramo `marcaDoProduto`, logo abaixo) já é desenhada para os
           // dois temas e não precisa dela — pôr a moldura ali seria dar o remédio
@@ -146,7 +146,11 @@ export function SidebarContent({
               Altura fixa e largura livre porque a arte enviada tem proporção
               desconhecida; forçar as duas distorceria o logo de quem configurou. */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={logo} alt={nome} className="h-7 w-auto max-w-[10rem] object-contain" />
+            <img
+              src={logo}
+              alt={nome}
+              className={cn("object-contain", collapsed ? "h-8 w-8" : "h-7 w-auto max-w-[10rem]")}
+            />
           </div>
         ) : marcaDoProduto ? (
           // O desenho do produto, inline (ver `components/branding/MarcaDoProduto.tsx`):
@@ -159,7 +163,7 @@ export function SidebarContent({
         ) : (
           <span className={cn("font-semibold tracking-tight", collapsed && "sr-only")}>{nome}</span>
         )}
-        {collapsed && !marcaDoProduto && (
+        {collapsed && !marcaDoProduto && !logo && (
           <span aria-hidden className="text-lg font-bold text-primary">
             {/* Spread e não `[0]`: nome começando com emoji ou acento composto
                 quebraria no meio do code point. Mesma regra de `resolveBranding`
