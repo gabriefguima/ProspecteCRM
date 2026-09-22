@@ -86,10 +86,10 @@ describe("o ícone carrega para quem NÃO entrou", () => {
     expect(icone).toMatch(/marcaDaSaida\(null\)/);
   });
 
-  it("o layout declara o ícone — é o que mata o pedido a /favicon.ico", () => {
+  it("o layout usa a logo personalizada e preserva /icon como fallback", () => {
     // O 404 de /favicon.ico não é barato: em produção ele devolve a
     // `app/not-found.tsx` inteira (19.435 bytes) para um pedido de ícone.
     const layout = fs.readFileSync(path.join(RAIZ, "app/layout.tsx"), "utf8");
-    expect(layout).toMatch(/icons:\s*\{\s*icon:\s*"\/icon"\s*\}/);
+    expect(layout).toMatch(/icons:\s*\{\s*icon:\s*marca\.logoUrl\s*\|\|\s*"\/icon"\s*\}/);
   });
 });
