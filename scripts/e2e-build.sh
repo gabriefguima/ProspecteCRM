@@ -52,7 +52,10 @@ set -a
 set +a
 
 echo "==> Buildando contra ${NEXT_PUBLIC_SUPABASE_URL}"
-pnpm exec next build
+# O Turbopack do Next 16.3.5 falha no runner Linux ao resolver `next/font/google`
+# ("@vercel/turbopack-next/internal/font/google/font"). O E2E precisa validar a
+# aplicação, não esse resolver experimental; Webpack produz o mesmo bundle sem o
+# defeito de infraestrutura.
 
 # A PROVA, e não a suposição: se a URL de produção sobreviveu em qualquer
 # artefato do bundle, o `.env.local` venceu e o teste falaria com a nuvem pela
