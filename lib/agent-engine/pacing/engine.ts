@@ -6,7 +6,7 @@
  * I/O nenhum. Clock e RNG são injetáveis (testes com clock fake e jitter
  * determinístico); em produção o chamador passa `new Date()` e omite o rng.
  *
- * Ordem de avaliação: janela horária (tz do tenant, domingo evitado) → caps
+ * Ordem de avaliação: janela horária (tz do tenant, domingo conforme `allowSunday`) → caps
  * diários (warm-up por idade do número; limite do CRM injetado) → throttle+jitter.
  */
 import type { PacingKnobs, WarmupStep } from './defaults';

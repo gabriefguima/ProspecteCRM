@@ -181,4 +181,12 @@ describe("o logo na barra lateral", () => {
     expect(screen.queryByRole("img")).toBeNull();
     expect(screen.getByText("Sistema do Revendedor")).toBeTruthy();
   });
+  it("recolhida, mantém o logo próprio em vez de trocá-lo pela inicial", () => {
+    marcaDaInstalacao = { ...marcaDaInstalacao, logoUrl: LOGO_DA_INSTALACAO };
+    contexto = { user: usuario, activeOrg: org };
+    renderSidebar({ collapsed: true });
+
+    expect(imagem().getAttribute("src")).toBe(LOGO_DA_INSTALACAO);
+    expect(screen.queryByText("S")).toBeNull();
+  });
 });

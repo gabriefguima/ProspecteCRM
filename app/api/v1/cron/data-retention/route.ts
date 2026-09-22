@@ -52,15 +52,29 @@ import type { NextRequest } from "next/server";
 
 import { ok, fail } from "@/lib/api/wrappers";
 import { audit } from "@/lib/audit";
+import { autorizaCron } from "@/lib/auth/cron-auth";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import {
   RETENCAO_AUDITORIA_DIAS_PADRAO,
   RETENCAO_AUDITORIA_DIAS_PISO,
+  RETENCAO_AVISO_DE_CASO_DIAS_PADRAO,
+  RETENCAO_AVISO_DE_CASO_DIAS_PISO,
+  RETENCAO_CONVERSA_DO_CASO_DIAS_PADRAO,
+  RETENCAO_CONVERSA_DO_CASO_DIAS_PISO,
+  RETENCAO_ESPELHO_AGENDA_DIAS_PADRAO,
+  RETENCAO_ESPELHO_AGENDA_DIAS_PISO,
   RETENCAO_FILA_DIAS_PADRAO,
   RETENCAO_FILA_DIAS_PISO,
+  RETENCAO_PASSAGEM_DIAS_PADRAO,
+  RETENCAO_PASSAGEM_DIAS_PISO,
   interpretarRetencao,
 } from "@/lib/retencao/politica";
+import {
+  varrerRedacoesIncompletas,
+  type ClienteDaCascata,
+  type ResultadoDaVarredura,
+} from "@/lib/lgpd/cascata";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
@@ -88,8 +102,30 @@ export interface ResultadoDaRetencao {
   /** O último lote veio cheio e o teto foi atingido: sobrou trabalho para amanhã. */
   fila_tem_resto: boolean;
   auditoria_tem_resto: boolean;
+  /** Os nonces de OAuth do Google já queimados (migration 0190). */
+  nonces_apagados: number;
+  /** O espelho da agenda conectada — cache com prazo (migration 0187). */
+  espelho_apagado: number;
+  lotes_espelho: number;
+  espelho_tem_resto: boolean;
+  /** A conversa da equipe com a IA sobre um caso (migration 0281). */
+  conversa_do_caso_apagada: number;
+  lotes_conversa_do_caso: number;
+  conversa_do_caso_tem_resto: boolean;
+  /** O registro da passagem do atendimento para uma pessoa (migration 0291). */
+  passagens_apagadas: number;
+  lotes_passagens: number;
+  passagens_tem_resto: boolean;
+  /** O registro de entrega do aviso de caso no WhatsApp da equipe (0292). */
+  avisos_de_caso_apagados: number;
+  lotes_avisos_de_caso: number;
+  avisos_de_caso_tem_resto: boolean;
   retencao_fila_dias: number;
   retencao_auditoria_dias: number;
+  retencao_espelho_dias: number;
+  retencao_conversa_do_caso_dias: number;
+  retencao_passagem_dias: number;
+  retencao_aviso_de_caso_dias: number;
   /** Avisos de configuração — nunca ausentes em silêncio quando existem. */
   avisos: string[];
 }
@@ -97,14 +133,28 @@ export interface ResultadoDaRetencao {
 /** Só a superfície que este cron usa — o teste injeta uma implementação. */
 export interface PodaDb {
   rpc(
-    nome: "fn_podar_fila_de_jobs" | "fn_expurgar_auditoria_vencida",
+    nome:
+      | "fn_podar_fila_de_jobs"
+      | "fn_expurgar_auditoria_vencida"
+      | "fn_expurgar_espelho_da_agenda"
+      | "fn_expurgar_nonces_de_oauth"
+      | "fn_expurgar_conversa_do_caso_vencida"
+      | "fn_expurgar_passagens_vencidas"
+      | "fn_expurgar_avisos_de_caso_vencidos",
     args: { p_retencao_dias: number; p_limite: number },
   ): Promise<{ data: number | null; error: { message: string } | null }>;
 }
 
 async function drenar(
   db: PodaDb,
-  nome: "fn_podar_fila_de_jobs" | "fn_expurgar_auditoria_vencida",
+  nome:
+    | "fn_podar_fila_de_jobs"
+    | "fn_expurgar_auditoria_vencida"
+    | "fn_expurgar_espelho_da_agenda"
+    | "fn_expurgar_nonces_de_oauth"
+    | "fn_expurgar_conversa_do_caso_vencida"
+    | "fn_expurgar_passagens_vencidas"
+    | "fn_expurgar_avisos_de_caso_vencidos",
   dias: number,
 ): Promise<{ apagadas: number; lotes: number; temResto: boolean }> {
   let apagadas = 0;
@@ -132,7 +182,14 @@ async function drenar(
  */
 export async function podarHistorico(
   db: PodaDb,
-  ambiente: { JOB_QUEUE_RETENTION_DAYS?: string; AUDIT_LOG_RETENTION_DAYS?: string },
+  ambiente: {
+    JOB_QUEUE_RETENTION_DAYS?: string;
+    AUDIT_LOG_RETENTION_DAYS?: string;
+    CALENDAR_MIRROR_RETENTION_DAYS?: string;
+    CASE_CHAT_RETENTION_DAYS?: string;
+    PASSAGEM_RETENTION_DAYS?: string;
+    CASE_ALERT_RETENTION_DAYS?: string;
+  },
 ): Promise<ResultadoDaRetencao> {
   const fila = interpretarRetencao(ambiente.JOB_QUEUE_RETENTION_DAYS, {
     chave: "JOB_QUEUE_RETENTION_DAYS",
@@ -145,19 +202,88 @@ export async function podarHistorico(
     piso: RETENCAO_AUDITORIA_DIAS_PISO,
   });
 
+  const espelho = interpretarRetencao(ambiente.CALENDAR_MIRROR_RETENTION_DAYS, {
+    chave: "CALENDAR_MIRROR_RETENTION_DAYS",
+    padrao: RETENCAO_ESPELHO_AGENDA_DIAS_PADRAO,
+    piso: RETENCAO_ESPELHO_AGENDA_DIAS_PISO,
+  });
+
+  const conversaDoCaso = interpretarRetencao(ambiente.CASE_CHAT_RETENTION_DAYS, {
+    chave: "CASE_CHAT_RETENTION_DAYS",
+    padrao: RETENCAO_CONVERSA_DO_CASO_DIAS_PADRAO,
+    piso: RETENCAO_CONVERSA_DO_CASO_DIAS_PISO,
+  });
+
+  const passagem = interpretarRetencao(ambiente.PASSAGEM_RETENTION_DAYS, {
+    chave: "PASSAGEM_RETENTION_DAYS",
+    padrao: RETENCAO_PASSAGEM_DIAS_PADRAO,
+    piso: RETENCAO_PASSAGEM_DIAS_PISO,
+  });
+
+  const avisoDeCaso = interpretarRetencao(ambiente.CASE_ALERT_RETENTION_DAYS, {
+    chave: "CASE_ALERT_RETENTION_DAYS",
+    padrao: RETENCAO_AVISO_DE_CASO_DIAS_PADRAO,
+    piso: RETENCAO_AVISO_DE_CASO_DIAS_PISO,
+  });
+
   const jobs = await drenar(db, "fn_podar_fila_de_jobs", fila.dias);
   const linhas = await drenar(db, "fn_expurgar_auditoria_vencida", auditoria.dias);
+  const eventos = await drenar(db, "fn_expurgar_espelho_da_agenda", espelho.dias);
+  // Quarta poda: os nonces de OAuth já queimados. O `state` vale dez minutos,
+  // então um dia é folga de duas ordens de grandeza — e sem esta linha a tabela
+  // cresceria para sempre, uma linha por conexão tentada, num produto que se
+  // instala e ninguém monitora.
+  const nonces = await drenar(db, "fn_expurgar_nonces_de_oauth", 1);
+  // Quinta poda: a conversa da equipe com a IA sobre um caso (migration 0281).
+  // O piso de 90 dias mora no CORPO da função; o número daqui é o que o
+  // operador pediu, já elevado, e é ele que aparece no relatório da rodada.
+  const conversas = await drenar(db, "fn_expurgar_conversa_do_caso_vencida", conversaDoCaso.dias);
+  // Sexta poda: o registro da passagem do atendimento para uma pessoa (0291). O
+  // piso de 90 dias mora no CORPO da função, como nas anteriores — e ela tem uma
+  // segunda guarda que só ela tem: passagem NÃO RECONHECIDA nunca é apagada, em
+  // nenhuma idade. Uma passagem aberta é alguém esperando resposta.
+  const passagens = await drenar(db, "fn_expurgar_passagens_vencidas", passagem.dias);
+  // Sétima poda: o registro de entrega do aviso de caso no WhatsApp da equipe
+  // (0292). O piso de 30 dias mora no CORPO da função, como nas anteriores. Ela
+  // não guarda o texto do aviso (só o resumo criptográfico dele), então o que se
+  // poda aqui é volume de operação — e é a poda de horizonte mais curto das
+  // sete, porque a única pergunta que a linha responde é de semanas.
+  const avisosDeCaso = await drenar(db, "fn_expurgar_avisos_de_caso_vencidos", avisoDeCaso.dias);
 
   return {
     jobs_apagados: jobs.apagadas,
     auditoria_apagada: linhas.apagadas,
+    espelho_apagado: eventos.apagadas,
+    nonces_apagados: nonces.apagadas,
+    conversa_do_caso_apagada: conversas.apagadas,
+    passagens_apagadas: passagens.apagadas,
+    avisos_de_caso_apagados: avisosDeCaso.apagadas,
     lotes_fila: jobs.lotes,
     lotes_auditoria: linhas.lotes,
+    lotes_espelho: eventos.lotes,
+    lotes_conversa_do_caso: conversas.lotes,
+    lotes_passagens: passagens.lotes,
+    lotes_avisos_de_caso: avisosDeCaso.lotes,
     fila_tem_resto: jobs.temResto,
     auditoria_tem_resto: linhas.temResto,
+    espelho_tem_resto: eventos.temResto,
+    conversa_do_caso_tem_resto: conversas.temResto,
+    passagens_tem_resto: passagens.temResto,
+    avisos_de_caso_tem_resto: avisosDeCaso.temResto,
     retencao_fila_dias: fila.dias,
     retencao_auditoria_dias: auditoria.dias,
-    avisos: [fila.aviso, auditoria.aviso].filter((a): a is string => a !== null),
+    retencao_espelho_dias: espelho.dias,
+    retencao_conversa_do_caso_dias: conversaDoCaso.dias,
+    retencao_passagem_dias: passagem.dias,
+    retencao_aviso_de_caso_dias: avisoDeCaso.dias,
+    avisos: [
+      fila.aviso,
+      auditoria.aviso,
+      espelho.aviso,
+      conversaDoCaso.aviso,
+      passagem.aviso,
+      avisoDeCaso.aviso,
+    ].filter((a): a is string => a !== null),
   };
 }
 
@@ -167,20 +293,47 @@ export async function podarHistorico(
  * não fez nada" sozinho é satisfeito por um cron que nunca audita.
  */
 export function houveEfeito(resultado: ResultadoDaRetencao): boolean {
-  return resultado.jobs_apagados > 0 || resultado.auditoria_apagada > 0;
+  return (
+    resultado.jobs_apagados > 0 ||
+    resultado.auditoria_apagada > 0 ||
+    // A terceira conta: sem ela, uma rodada que só podou o espelho apagaria
+    // linhas e não deixaria registro — e o CLAUDE.md manda auditar QUANDO HÁ
+    // EFEITO, não parar de auditar.
+    resultado.espelho_apagado > 0 ||
+    // A quarta, pela MESMA razão, e ela quase entrou sem: acrescentei a poda de
+    // nonces ao laço e ao retorno e esqueci desta linha. O comentário acima
+    // descrevia exatamente o defeito que eu estava criando um parágrafo abaixo.
+    resultado.nonces_apagados > 0 ||
+    // A quinta, pela MESMA razão das duas acima: uma rodada que só apagou
+    // conversa de caso vencida apagaria linhas e não deixaria registro — e o
+    // CLAUDE.md manda auditar QUANDO HÁ EFEITO, nunca parar de auditar.
+    resultado.conversa_do_caso_apagada > 0 ||
+    // A sexta, pela MESMA razão: uma rodada que só apagou passagem vencida
+    // apagaria linhas e não deixaria registro — e o CLAUDE.md manda auditar
+    // QUANDO HÁ EFEITO, nunca parar de auditar.
+    resultado.passagens_apagadas > 0 ||
+    // A sétima, pela MESMA razão: uma rodada que só apagou registro de entrega
+    // de aviso vencido apagaria linhas e não deixaria registro — e o CLAUDE.md
+    // manda auditar QUANDO HÁ EFEITO, nunca parar de auditar.
+    resultado.avisos_de_caso_apagados > 0
+  );
 }
 
 async function handle(req: NextRequest): Promise<Response> {
   const requestId = randomUUID();
 
-  const auth = req.headers.get("authorization") ?? "";
-  const provided = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : "";
-  const accepted = [env.INTERNAL_CRON_SECRET, env.INTERNAL_SECRET].filter(Boolean);
-  if (accepted.length === 0 || !provided || !accepted.includes(provided)) {
+  if (!autorizaCron(req)) {
     return fail("forbidden", "Cron secret missing or invalid.", 403, { requestId });
   }
 
   let resultado: ResultadoDaRetencao;
+  let varredura: ResultadoDaVarredura = {
+    examinados: 0,
+    comResiduo: 0,
+    completados: [],
+    temResto: false,
+    falhas: [],
+  };
   try {
     const admin = createAdminClient();
     // As duas funções são novas e não estão em `lib/database.types.ts` (gerado a
@@ -195,7 +348,33 @@ async function handle(req: NextRequest): Promise<Response> {
     resultado = await podarHistorico(db, {
       JOB_QUEUE_RETENTION_DAYS: env.JOB_QUEUE_RETENTION_DAYS,
       AUDIT_LOG_RETENTION_DAYS: env.AUDIT_LOG_RETENTION_DAYS,
+      CASE_CHAT_RETENTION_DAYS: env.CASE_CHAT_RETENTION_DAYS,
+      PASSAGEM_RETENTION_DAYS: env.PASSAGEM_RETENTION_DAYS,
+      CASE_ALERT_RETENTION_DAYS: env.CASE_ALERT_RETENTION_DAYS,
     });
+    // ── A cascata de anonimização que ficou pela metade ──────────────────
+    //
+    // Mora AQUI, e não numa rota de cron própria, por uma razão de packaging: o
+    // agendamento vive no serviço `scheduler`, e um cron novo exigiria linha
+    // nova no `docker/scheduler/entrypoint.sh` — que só chega a quem já
+    // instalou depois de a imagem do scheduler ser trocada. Pendurado no
+    // varredor diário que TODO clone já roda, o conserto alcança o parque
+    // instalado sem ninguém editar nada (DoD 15). Nome e cadência também
+    // servem: retenção é remover dado pessoal no prazo, e a LGPD dá D+15.
+    //
+    // O client aqui é o de SERVICE ROLE, que bypassa a RLS — por isso
+    // `completarRedacaoDoContato` filtra `organization_id` à mão em toda query,
+    // com a org vinda da própria linha de `contacts` (fonte confiável).
+    //
+    // Try PRÓPRIO, e não o de fora: uma varredura que explodisse derrubaria o
+    // relatório da PODA junto, e o cron passaria a auditar `falhou: true` num
+    // dia em que o expurgo funcionou. As duas tarefas dividem o relógio, não o
+    // desfecho — quem falha aqui falha aqui, e a falha é dita, não engolida.
+    try {
+      varredura = await varrerRedacoesIncompletas(admin as unknown as ClienteDaCascata);
+    } catch (err) {
+      varredura.falhas.push(err instanceof Error ? err.message : String(err));
+    }
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     logger.error("[data-retention] poda falhou", { error: detail, requestId });
@@ -232,7 +411,46 @@ async function handle(req: NextRequest): Promise<Response> {
     });
   }
 
-  return ok(resultado, { requestId });
+  for (const falha of varredura.falhas) {
+    logger.error("[data-retention] retomada de anonimização falhou", { falha, requestId });
+  }
+
+  // Uma linha POR CONTATO, na org dele: é a auditoria que responde ao titular, e
+  // uma linha global `retention.sweep_run` não responde a ninguém em particular.
+  // Ela aparece em `/app/audit` como qualquer outra (a tela filtra por `action`
+  // em campo livre, não por lista fechada) — é o laço de retorno desta peça.
+  // Só para quem TINHA resíduo — `completados` já é a lista filtrada, e o `if`
+  // deixa isso explícito para o guarda de AST que varre esta pasta (ele não
+  // conta `for` como condição, e está certo em não contar).
+  for (const feito of varredura.completados) {
+    if (feito.resultado.tabelas.length > 0) {
+      void audit({
+        action: "lgpd.anonymize_catchup",
+        organizationId: feito.organizationId,
+        bypassedRls: true,
+        resourceType: "contact",
+        resourceId: feito.contactId,
+        requestId,
+        metadata: {
+          contact_id: feito.contactId,
+          origem: "cron.data-retention",
+          redacted_tables: feito.resultado.tabelas,
+          redacted_lead_ids: feito.resultado.leadsRedigidas,
+          redacted_activities: feito.resultado.atividadesRedigidas,
+        },
+      });
+    }
+  }
+
+  return ok(
+    {
+      ...resultado,
+      anonimizacoes_examinadas: varredura.examinados,
+      anonimizacoes_completadas: varredura.completados.length,
+      anonimizacoes_tem_resto: varredura.temResto,
+    },
+    { requestId },
+  );
 }
 
 export async function GET(req: NextRequest): Promise<Response> {

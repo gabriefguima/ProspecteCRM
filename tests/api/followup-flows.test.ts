@@ -64,6 +64,7 @@ function makeDb(pointers: Row[], versions: Row[], stages: Row[] = []) {
   const tables: Record<string, Row[]> = {
     followup_flow_pointers: pointers,
     followup_flow_versions: versions,
+    followup_enrollments: [],
     // O publish do gatilho de etapa LÊ a etapa antes de deixar publicar (etapa
     // apagada/arquivada = fluxo `active` que nunca matricula ninguém). Sem esta
     // tabela no mock, o caso positivo do `stage_change` não teria como existir.
@@ -74,11 +75,15 @@ function makeDb(pointers: Row[], versions: Row[], stages: Row[] = []) {
     const filters: Array<[string, unknown]> = [];
     let orderCol: string | null = null;
     let orderAsc = true;
-    let mode: "select" | "insert" | "update" = "select";
+    let mode: "select" | "insert" | "update" | "delete" = "select";
     let payload: Row | undefined;
 
     function matches(row: Row): boolean {
-      return filters.every(([k, v]) => row[k] === v);
+      return filters.every(([k, v]) => {
+        if (k === "surface") return (row.surface ?? "followup") === v;
+        if (v instanceof Set) return v.has(row[k]);
+        return row[k] === v;
+      });
     }
 
     function execute(): { data: Row[] | null; error: { code?: string; message: string } | null } {
@@ -104,6 +109,7 @@ function makeDb(pointers: Row[], versions: Row[], stages: Row[] = []) {
           draft_graph: null,
           handoff_policy: "pause",
           trigger_config: { kind: "manual" },
+          surface: "followup",
           active_version_id: null,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -135,6 +141,13 @@ function makeDb(pointers: Row[], versions: Row[], stages: Row[] = []) {
         );
         if (dup) return { data: null, error: { code: "23505", message: "duplicate name" } };
       }
+      if (mode === "delete") {
+        const kept = tableRows.filter((r) => !matches(r));
+        const removed = tableRows.filter(matches);
+        tableRows.length = 0;
+        tableRows.push(...kept);
+        return { data: removed, error: null };
+      }
       for (const row of matched) Object.assign(row, payload);
       return { data: matched, error: null };
     }
@@ -153,8 +166,16 @@ function makeDb(pointers: Row[], versions: Row[], stages: Row[] = []) {
         payload = obj;
         return b;
       },
+      delete() {
+        mode = "delete";
+        return b;
+      },
       eq(col: string, val: unknown) {
         filters.push([col, val]);
+        return b;
+      },
+      in(col: string, vals: unknown[]) {
+        filters.push([col, new Set(vals)]);
         return b;
       },
       order(col: string, opts?: { ascending?: boolean }) {
@@ -217,6 +238,7 @@ function session(effectiveRole: Role, db: ReturnType<typeof makeDb>) {
     full_name: null,
     avatar_url: null,
     is_platform_admin: false,
+    idioma: "pt-BR" as const,
     organizations: [{ organization_id: ORG_ID, organization_name: "Org", role: effectiveRole }],
   };
   vi.mocked(requireRole).mockImplementation(async (min: Role) => {
@@ -307,7 +329,7 @@ describe("GET /api/v1/ai/followup-flows — list", () => {
     );
     session("viewer", db);
     const { GET } = await import("@/app/api/v1/ai/followup-flows/route");
-    const res = await GET();
+    const res = await GET(req("GET"));
     expect(res.status).toBe(200);
     const body = (await res.json()) as { data: Row[] };
     expect(body.data).toHaveLength(1);
@@ -541,6 +563,78 @@ describe("POST /api/v1/ai/followup-flows/:id/publish", () => {
     expect(pointerRows[0]!.status).toBe("active");
   });
 
+  /**
+   * A regra de etapa do nó de condição guarda o `stage_id`, e só o banco sabe se
+   * ele existe. Antes do seletor, a tela aceitava o NOME digitado ("PAGO"), que o
+   * motor nunca casa — e o fluxo publicava com a regra morta. A rota lê as etapas
+   * citadas FILTRANDO a organização: id de etapa de outra org é etapa que não existe.
+   */
+  describe("regra de etapa no nó de condição", () => {
+    const STAGE_ID = "55555555-5555-4555-8555-555555555555";
+    const POINTER_ID = "33333333-3333-4333-8333-333333333333";
+    const comRegraDeEtapa = (valor: string): FlowGraph => ({
+      nodes: [
+        trigger("t1"),
+        {
+          id: "c1",
+          type: "condition",
+          label: "c1",
+          position: pos,
+          config: { combinator: "and", checks: [{ field: "lead_stage", op: "eq", value: valor }] },
+        },
+        end("e1"),
+      ],
+      edges: [
+        edge("edge1", "t1", "c1"),
+        { id: "edge2", source: "c1", target: "e1", priority: 0, condition: { type: "cond_result", value: true } },
+        { id: "edge3", source: "c1", target: "e1", priority: 0, condition: { type: "cond_result", value: false } },
+      ],
+    });
+    const publicar = async (valor: string, stages: Row[]) => {
+      const db = makeDb(
+        [{ id: POINTER_ID, organization_id: ORG_ID, status: "draft", draft_graph: comRegraDeEtapa(valor) }],
+        [],
+        stages,
+      );
+      session("manager", db);
+      const { POST } = await import("@/app/api/v1/ai/followup-flows/[id]/publish/route");
+      return POST(req("POST"), ctx(POINTER_ID));
+    };
+    const codigos = async (res: Response) =>
+      ((await res.json()) as { error: { details: { errors: Array<{ code: string }> } } }).error.details.errors.map(
+        (e) => e.code,
+      );
+
+    it("etapa ativa da organização → publica", async () => {
+      const res = await publicar(STAGE_ID, [
+        { id: STAGE_ID, organization_id: ORG_ID, name: "Pago", is_archived: false, crm_pipelines: { name: "Vendas" } },
+      ]);
+      expect(res.status).toBe(200);
+    });
+
+    it("nome digitado à mão (fluxo antigo) → 422 check_stage_not_found", async () => {
+      const res = await publicar("PAGO", []);
+      expect(res.status).toBe(422);
+      expect(await codigos(res)).toEqual(["check_stage_not_found"]);
+    });
+
+    it("etapa de OUTRA organização → 422, igual a etapa que não existe", async () => {
+      const res = await publicar(STAGE_ID, [
+        { id: STAGE_ID, organization_id: OTHER_ORG_ID, name: "Pago", is_archived: false, crm_pipelines: { name: "Vendas" } },
+      ]);
+      expect(res.status).toBe(422);
+      expect(await codigos(res)).toEqual(["check_stage_not_found"]);
+    });
+
+    it("etapa arquivada → 422 check_stage_archived", async () => {
+      const res = await publicar(STAGE_ID, [
+        { id: STAGE_ID, organization_id: ORG_ID, name: "Pago", is_archived: true, crm_pipelines: { name: "Vendas" } },
+      ]);
+      expect(res.status).toBe(422);
+      expect(await codigos(res)).toEqual(["check_stage_archived"]);
+    });
+  });
+
   it("kind conhecido mas SEM motor ('conversation_end') → 422 trigger_kind_not_implemented", async () => {
     const db = makeDb(
       [
@@ -613,6 +707,16 @@ describe("POST /api/v1/ai/followup-flows/:id/publish", () => {
     const { POST } = await import("@/app/api/v1/ai/followup-flows/[id]/publish/route");
     const res = await POST(req("POST"), ctx("33333333-3333-4333-8333-333333333333"));
     expect(res.status).toBe(200);
+  });
+
+  it("appointment_no_show com consumidor ativo publica versão e mantém gatilhos desconhecidos recusados",async()=>{
+    const id="33333333-3333-4333-8333-333333333333";
+    const db=makeDb([{id,organization_id:ORG_ID,status:"draft",draft_graph:VALID_GRAPH,trigger_config:{kind:"appointment_no_show"}}],[]);
+    session("manager",db);
+    const {POST}=await import("@/app/api/v1/ai/followup-flows/[id]/publish/route");
+    expect((await POST(req("POST"),ctx(id))).status).toBe(200);
+    const {data}=(await db.from("followup_flow_pointers").select().eq("id",id)) as {data:Row[]};
+    expect(data[0]).toMatchObject({status:"active"});expect(data[0]?.active_version_id).toBeTruthy();
   });
 
   it("trigger_config.kind='manual' → publica normalmente", async () => {
@@ -749,3 +853,43 @@ describe("POST /api/v1/ai/followup-flows/:id/disable", () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe("DELETE /api/v1/ai/followup-flows/:id", () => {
+  const P1 = "33333333-3333-4333-8333-333333333333";
+
+  it("manager → 200, pointer some, audit emitido", async () => {
+    const db = makeDb([{ id: P1, organization_id: ORG_ID, status: "disabled" }], []);
+    session("manager", db);
+    const { DELETE } = await import("@/app/api/v1/ai/followup-flows/[id]/route");
+    const res = await DELETE(req("DELETE"), ctx(P1));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { id: string } };
+    expect(body.data.id).toBe(P1);
+    expect(vi.mocked(audit)).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "followup_flow.deleted" }),
+    );
+  });
+
+  it("pointer inexistente na org → 404", async () => {
+    const db = makeDb([], []);
+    session("manager", db);
+    const { DELETE } = await import("@/app/api/v1/ai/followup-flows/[id]/route");
+    const res = await DELETE(req("DELETE"), ctx("55555555-5555-4555-8555-555555555555"));
+    expect(res.status).toBe(404);
+  });
+
+  it("agent (< manager) → 403", async () => {
+    const db = makeDb([{ id: P1, organization_id: ORG_ID, status: "draft" }], []);
+    session("agent", db);
+    const { DELETE } = await import("@/app/api/v1/ai/followup-flows/[id]/route");
+    const res = await DELETE(req("DELETE"), ctx(P1));
+    expect(res.status).toBe(403);
+  });
+});
+
+// Este teste isola o handler; autoridade de suporte é exercitada na suíte própria.
+vi.mock("@/lib/impersonate/support", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/impersonate/support")>(),
+  requireSupportWrite: vi.fn(async () => null),
+  authenticatedSessionId: vi.fn(async () => "f2200000-0000-4000-8000-000000000099"),
+}));

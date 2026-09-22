@@ -6,9 +6,35 @@
  * (quando o payload entra na pipeline pós-verificação HMAC).
  */
 import { z } from "zod";
+import { COMANDOS_DO_BANCO, type ComandoDoBanco } from "@/lib/inbox/comando-da-conversa";
+import { PISO_DA_BUSCA, buscaValeConsulta } from "@/lib/inbox/termo-de-busca";
 
+/**
+ * O que a API aceita ESCREVER. Cinco valores, e a ausência de `pending`/`resolved`
+ * é deliberada: quem escreve esses dois é o MOTOR (`performHumanHandoff` grava
+ * `pending` ao escalar), e deixar um cliente REST gravá-los seria deixá-lo fingir
+ * uma escalação que nunca aconteceu.
+ */
 export const conversationStatusSchema = z.enum([
   "open",
+  "claimed",
+  "ai_handling",
+  "closed",
+  "archived",
+]);
+
+/**
+ * O que a API aceita FILTRAR. Sete — o vocabulário inteiro do CHECK do banco.
+ *
+ * Ler e escrever são perguntas diferentes, e tratá-las como uma só deixava
+ * `pending` — o estado da conversa que o automático escalou — inalcançável por
+ * qualquer filtro da API. Não havia como pedir "as conversas que a IA passou para
+ * uma pessoa e ninguém pegou", que é a pergunta mais urgente do inbox.
+ */
+export const conversationStatusFiltroSchema = z.enum([
+  "open",
+  "pending",
+  "resolved",
   "claimed",
   "ai_handling",
   "closed",
@@ -132,6 +158,7 @@ export type ConversationTags = z.infer<typeof conversationTagsSchema>;
 export const patchConversationSchema = z
   .object({
     status: conversationStatusSchema.optional(),
+    expected_revision: z.number().int().positive().optional(),
     tags: conversationTagsSchema.optional(),
   })
   .refine((d) => d.status !== undefined || d.tags !== undefined, {
@@ -140,36 +167,10 @@ export const patchConversationSchema = z
 
 export type PatchConversationInput = z.infer<typeof patchConversationSchema>;
 
-/**
- * POST /api/v1/conversations/bulk — mesmo molde de bulkLeadActionSchema
- * (lib/schemas/leads.ts): discriminada por `action`, até 50 ids por chamada.
- * `set_status` só aceita os dois desfechos terminais (fechar/arquivar) — não
- * é um atalho para claim/release, que têm efeito colateral de dono e ficam
- * de fora do bulk por ora.
- */
-export const bulkConversationActionSchema = z.discriminatedUnion("action", [
-  z.object({
-    action: z.literal("set_status"),
-    conversation_ids: z.array(z.string().uuid()).min(1).max(50),
-    params: z.object({ status: z.enum(["closed", "archived"]) }),
-  }),
-  z.object({
-    action: z.literal("tag"),
-    conversation_ids: z.array(z.string().uuid()).min(1).max(50),
-    params: z.object({ add: z.array(conversationTagSchema).min(1) }),
-  }),
-  z.object({
-    action: z.literal("mark_read"),
-    conversation_ids: z.array(z.string().uuid()).min(1).max(50),
-    params: z.object({}).optional(),
-  }),
-]);
-export type BulkConversationActionInput = z.infer<typeof bulkConversationActionSchema>;
-
 /** POST /conversations/open-with-contact — abrir inbox a partir de cartão de contato. */
 export const openConversationWithContactSchema = z
   .object({
-    channel_session_id: z.string().uuid(),
+    channel_session_id: z.string().uuid().optional(),
     contact_id: z.string().uuid().optional(),
     phone_number: z.string().min(8).max(32).optional(),
     name: z.string().trim().min(1).max(200).optional(),
@@ -181,27 +182,7 @@ export const openConversationWithContactSchema = z
 export type OpenConversationWithContactInput = z.infer<typeof openConversationWithContactSchema>;
 
 /**
- * POST /conversations/start-manual — tela "Nova conversa": humano escolhe (ou
- * cria) um contato e escreve a primeira mensagem. Mesmas duas formas de
- * apontar o contato de `openConversationWithContactSchema` (id existente OU
- * nome+telefone novo) — reaproveita a mesma validação em vez de reinventar.
- */
-export const startManualConversationSchema = z
-  .object({
-    channel_session_id: z.string().uuid(),
-    contact_id: z.string().uuid().optional(),
-    phone_number: z.string().min(8).max(32).optional(),
-    name: z.string().trim().min(1).max(200).optional(),
-    body: z.string().trim().min(1).max(4096),
-  })
-  .refine((d) => !!d.contact_id || !!d.phone_number?.trim(), {
-    message: "Informe contact_id ou phone_number.",
-  });
-
-export type StartManualConversationInput = z.infer<typeof startManualConversationSchema>;
-
-/**
- * Estados TERMINAIS: a conversa acabou e não volta sozinha.
+ * Estados TERMINAIS: atendimento encerrado; nova entrada válida pode reabrir.
  *
  * Vive aqui, e não espalhado em cada `.not(...)`, porque "acabou" é uma decisão
  * de produto — se um dia `resolved` deixar de ser legado e passar a valer, o
@@ -209,8 +190,119 @@ export type StartManualConversationInput = z.infer<typeof startManualConversatio
  */
 export const CONVERSATION_TERMINAL_STATUSES = ["closed", "archived"] as const;
 
+/**
+ * OS STATUS EM QUE UMA CONVERSA SEM DONO ESTÁ ESPERANDO UMA PESSOA.
+ *
+ * Existe pela MESMA razão do irmão acima — "está na fila" é decisão de produto e
+ * precisa de um lugar só — e nasce de uma divergência medida: a definição estava
+ * copiada em CINCO sítios e eles não concordavam entre si.
+ *
+ *   `supabase/baseline.sql` (trg_conversation_routing_requested)  open+pending
+ *   `lib/routing/queue.ts` getQueuePosition  (o nº que o CLIENTE ouve)  open+pending
+ *   `lib/routing/queue.ts` getQueuePositions (o nº que a TELA mostra)   open
+ *   `lib/routing/queue.ts` getQueueStatus    (o painel do gerente)      open
+ *   `app/api/v1/conversations/counts`        (o badge da aba)           open
+ *   `components/inbox/InboxLayout` tabToFilter (a aba Fila)             open
+ *
+ * Duas consequências, as duas do produto e não de estilo:
+ *
+ *   1. A conversa que o automático ESCALOU fica em `status='pending'`
+ *      (`performHumanHandoff`), então ela sumia da aba Fila, do badge e do painel
+ *      do gerente — exatamente a conversa que mais precisa de uma pessoa era a
+ *      única invisível. O trigger de roteamento, esse, sempre a enfileirou: é por
+ *      isso que o rodízio a atribuía enquanto a tela jurava que ela não existia.
+ *   2. Duas funções VIZINHAS no mesmo arquivo davam números diferentes: o "você é
+ *      o 5º da fila" que o cliente recebe pelo WhatsApp contava `pending`, e o
+ *      "3º" que o atendente lê na tela não. A promessa feita ao cliente e o que a
+ *      equipe via eram calculados por réguas diferentes.
+ *
+ * `claimed` não entra (tem dono), `ai_handling` não entra (o automático está
+ * cuidando — é a aba IA), terminais não entram.
+ */
+export const CONVERSATION_QUEUE_STATUSES = ["open", "pending"] as const;
+
 export const listConversationsQuerySchema = z.object({
-  status: conversationStatusSchema.optional(),
+  /**
+   * Um status, ou vários separados por vírgula (`?status=open,pending`).
+   *
+   * ADITIVO: `?status=open` continua valendo e continua devolvendo o mesmo — a
+   * saída é sempre normalizada para lista, e uma lista de um elemento produz o
+   * mesmo SQL que a igualdade produzia. A forma plural existe porque a aba Fila
+   * precisa de DOIS estados (ver `CONVERSATION_QUEUE_STATUSES`) e, sem ela, a
+   * única saída seria a tela filtrar em memória o que a página já truncou.
+   */
+  status: z
+    .union([conversationStatusFiltroSchema, z.string()])
+    .optional()
+    .transform((v, ctx) => {
+      if (v === undefined) return undefined;
+      const itens = v
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const validos: Array<z.infer<typeof conversationStatusFiltroSchema>> = [];
+      for (const item of itens) {
+        const r = conversationStatusFiltroSchema.safeParse(item);
+        if (!r.success) {
+          // Recusa em vez de ignorar: filtro com valor desconhecido devolveria
+          // uma lista MENOR sem nada dizendo por quê — e uma lista curta parece
+          // resposta, não erro.
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `status inválido: ${item}`,
+          });
+          return z.NEVER;
+        }
+        validos.push(r.data);
+      }
+      return validos.length > 0 ? validos : undefined;
+    }),
+  /**
+   * QUEM MANDA na conversa — um valor, ou vários separados por vírgula.
+   *
+   * É o filtro que as abas passaram a usar no lugar de `status`. A diferença não
+   * é de forma, é de pergunta: `status` é ciclo de vida ("aberta? fechada?"),
+   * `comando` é quem responde a próxima mensagem — e o motor de IA nunca lê
+   * `status`. Enquanto as abas perguntavam pelo status, a Fila listava como
+   * "aguardando atendente" as conversas que o robô estava atendendo.
+   *
+   * O valor é calculado pelo banco (`comando_da_conversa`, migration 0203), e é
+   * por isso que ele pode ir no `WHERE` sem quebrar o cursor de paginação.
+   */
+  comando: z
+    .union([z.enum(COMANDOS_DO_BANCO), z.string()])
+    .optional()
+    .transform((v, ctx) => {
+      if (v === undefined) return undefined;
+      const itens = v
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (itens.length === 0) {
+        // AQUI ELE DIVERGE DO `status`, DE PROPÓSITO. Lá, lista vazia vira
+        // `undefined` — "sem filtro". Aqui isso seria a pior saída possível: a
+        // aba pediria um conjunto vazio e receberia TUDO, ou seja, a tela
+        // afirmaria que todas as conversas estão no estado que ela nomeia.
+        // Melhor um 422 barulhento que uma lista plausível e errada.
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "comando vazio" });
+        return z.NEVER;
+      }
+      const validos: ComandoDoBanco[] = [];
+      for (const item of itens) {
+        const r = z.enum(COMANDOS_DO_BANCO).safeParse(item);
+        if (!r.success) {
+          // Mesma razão do `status`: recusar, não ignorar. Uma lista menor sem
+          // explicação parece resposta.
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `comando inválido: ${item}`,
+          });
+          return z.NEVER;
+        }
+        validos.push(r.data);
+      }
+      return validos;
+    }),
   /**
    * Esconde as conversas terminais (fechada/arquivada).
    *
@@ -223,7 +315,35 @@ export const listConversationsQuerySchema = z.object({
   assigned_to: z.union([z.string().uuid(), z.literal("me"), z.literal("unassigned")]).optional(),
   channel_session_id: z.string().uuid().optional(),
   tag: conversationTagSchema.optional(),
-  search: z.string().optional(),
+  /**
+   * Só as que têm mensagem não lida para o dono.
+   *
+   * NASCEU FORA DO CONTRATO E POR ISSO FORA DE TODO MECANISMO. Era `onlyUnread`,
+   * um predicado aplicado em memória sobre a página JÁ TRUNCADA (50 linhas): com
+   * as 50 primeiras lidas, a tela dizia "Sem conversas por aqui" — e o botão
+   * "Carregar mais" nem era desenhado, porque o estado vazio retornava antes dele.
+   * Medido na tela: ligar o filtro não gerava requisição nenhuma.
+   *
+   * Estando aqui, `tests/unit/rota-le-todo-filtro-do-schema.test.ts` passa a
+   * cobrá-lo sozinho — a cerca deriva as chaves deste schema.
+   */
+  unread: z.coerce.boolean().optional(),
+  /**
+   * O termo de busca. A régua inteira vive em `lib/inbox/termo-de-busca.ts`, e a
+   * tela lê a MESMA — repetir aqui faria os dois divergirem, e a divergência
+   * apareceria como erro na cara de quem digita (a rota recusa e o hook mostra).
+   *
+   * `buscaValeConsulta` mede o termo DEPOIS de normalizado, e não o cru: um termo
+   * feito só de pontuação passa por qualquer piso de caracteres e vira string
+   * vazia na normalização — e vazio no `ilike` casa TUDO.
+   */
+  search: z
+    .string()
+    .trim()
+    .refine(buscaValeConsulta, {
+      message: `A busca precisa de pelo menos ${PISO_DA_BUSCA} caracteres.`,
+    })
+    .optional(),
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });

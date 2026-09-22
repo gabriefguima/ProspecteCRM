@@ -1,15 +1,27 @@
+import type { ServiceBoundary } from "@/lib/atendimento/fronteira";
 /**
  * Node handlers for the follow-up flow engine (Task 4.1) — PURE, no DB access.
  * `engine.ts` owns the tick/DB orchestration; this file only decides "given
  * this node + these facts, what happens next" so it's testable without Postgres.
  */
-import { NO_REPLY_BRANCH_ID, nodeBranches } from "./graph-schema";
-import type { FlowEdge, FlowNode } from "./graph-schema";
+import { NO_REPLY_BRANCH_ID, REPEAT_BODY_BRANCH_ID, REPEAT_DONE_BRANCH_ID, nodeBranches } from "./graph-schema";
+import type { FlowEdge, FlowNode, ReplySaveTo } from "./graph-schema";
+import { parseReplyCount } from "./parse-count";
 import { clampEspera, esperaPlanejadaDe, type EsperaAdaptativa } from "./timing-plan";
+import { fraseDeConfirmacao } from "./vocabulario";
 
 export type EnrollmentStatus =
   | "active"
   | "waiting_reply"
+  /**
+   * Espera longa imune à resposta (nó `wait` com `immune_to_reply`).
+   *
+   * TEM relógio como `active` — é o `next_eval_at` que a acorda —, mas está
+   * fora de `LIVE_STATUSES` em `reactivity.ts`, então a mensagem do contato não
+   * a cancela nem corta o timer, e fora do índice único anti-spam, então o
+   * contato continua podendo entrar noutra cadência enquanto dorme.
+   */
+  | "dormente"
   | "paused_handoff"
   | "completed"
   | "cancelled"
@@ -23,6 +35,10 @@ export type EnrollmentOutcome = "converted" | "replied" | "exhausted" | "opted_o
  * can produce it. Field names mirror the table (migration 0054) 1:1.
  */
 export interface EnrollmentRow {
+  service_boundary?: ServiceBoundary | null;
+  revision?: number;
+  appointment_id?: string | null;
+  appointment_revision?: number | null;
   id: string;
   organization_id: string;
   pointer_id: string;
@@ -56,25 +72,36 @@ export interface LeadFacts {
   lead_stage: string | null;
   tags: string[];
   steps_taken: number;
+  /**
+   * Desfecho do passo anterior — a classe que o último `ai_classify` escolheu,
+   * lida dos eventos da inscrição (`ultimoDesfechoDe`). `null` quando o fluxo
+   * ainda não classificou nada; e `null` NÃO satisfaz `neq` (ver `evaluateCheck`).
+   */
   last_outcome: string | null;
+  contact_name?: string | null;
+  custom_fields?: Record<string, unknown>;
 }
 
 /** Reference to a `followup_enrollment_events` row — only what `resolveWaitPhase` needs. */
 export interface EnrollmentEventRef {
   node_id: string | null;
   idempotency_key: string | null;
+  event_type?: string | null;
+  payload?: Record<string, unknown> | null;
 }
 
 export type NodeResult =
   // `reason` só aparece quando o avanço NÃO é o avanço comum: hoje, o trigger
   // desistindo do plano de tempo (o turno nunca voltou). Vira event_type próprio
   // no engine — seguir sem plano é um fato que o operador precisa poder ler.
-  | { kind: "advance"; next_node_id: string; next_eval_at: Date; reason?: "plan_timeout" }
-  | { kind: "wait"; next_eval_at: Date } // stays on the node
+  | { kind: "advance"; next_node_id: string; next_eval_at: Date; reason?: "plan_timeout"; repeat?: { index: number; total: number } }
+  // stays on the node. `wake_status` parks `match_reply` in waiting_reply without a job.
+  | { kind: "wait"; next_eval_at: Date; wake_status?: "active" | "waiting_reply" | "dormente" }
   | {
       kind: "enqueue_turn";
       purpose: "send_message" | "classify" | "plan_timing";
       wake_status: "active" | "waiting_reply";
+      fixed_body?: string;
     }
   // action recheck: the send turn is already in flight; stay put WITHOUT re-enqueuing (anti-dup-send).
   | { kind: "recheck"; next_eval_at: Date }
@@ -110,6 +137,15 @@ export const ACTION_RECHECK_MAX_MS = 60 * 60_000;
  * maior noite fechada — e ainda custa poucos ticks. O dead-man continua
  * existindo: worker realmente morto termina em `dead`, só que depois de uma
  * espera que não confunde noite com defeito.
+ *
+ * ⚠️ E SUBIR O NÚMERO NÃO É A DEFESA — a defesa é `EVENTO_ACAO_ADIADA`.
+ * Aumentar o teto só compra tempo contra a espera mais longa que alguém
+ * configurou, e essa espera não tem teto: as horas e os dias da janela
+ * anti-ban são knobs por canal (uma noite de sábado com domingo fechado já dá
+ * 33h), e a faixa de envio do agente permite um único dia da semana (159h).
+ * Contra um orçamento fixo, esse jogo não se ganha. O que o resolve é o turno
+ * DIZER que está estacionado, e o contador medir só a ociosidade depois disso
+ * — ver `rechecksOciososDaAcao` logo abaixo.
  */
 export const MAX_ACTION_RECHECKS = 14;
 
@@ -121,9 +157,59 @@ export const MAX_ACTION_RECHECKS = 14;
  * curtos), janela fechada volta em horas (e aí não faz sentido perguntar de 5
  * em 5 minutos por 9 horas).
  */
+export function destinoJaPreenchido(lead: LeadFacts, saveTo: ReplySaveTo): boolean {
+  if (saveTo.kind === "contact_name") return Boolean(lead.contact_name?.trim());
+  const v = lead.custom_fields?.[saveTo.key];
+  if (typeof v === "string") return v.trim().length > 0;
+  return v !== undefined && v !== null && v !== "";
+}
+
+/** Resposta que MANTÉM o valor já gravado no modo `confirm`. */
+export function ehConfirmacao(body: string): boolean {
+  const t = body.trim().toLowerCase();
+  return /^(sim|s|yes|ok|isso|correto|confirmo|confirmar|pode)([.!]?)$/.test(t) || t === "isso mesmo";
+}
+
+function modoSeJaExiste(node: Extract<FlowNode, { type: "match_reply" }>): "skip" | "overwrite" | "confirm" {
+  return node.config.if_exists ?? "overwrite";
+}
+
 export function atrasoDoRecheck(rechecksJaFeitos: number): number {
   const passo = Math.max(0, rechecksJaFeitos);
   return Math.min(ACTION_RECHECK_MS * 2 ** passo, ACTION_RECHECK_MAX_MS);
+}
+
+/**
+ * O evento que o turno grava quando o envio foi ADIADO para um instante CONHECIDO
+ * — janela fechada (anti-ban, ou a faixa do próprio agente), e não defeito.
+ *
+ * É PROVA DE VIDA, e essa é a razão de ele existir. O dead-man da ação mede
+ * "rechecks sem o turno fechar", e essa medida não distingue duas situações
+ * opostas: o worker morreu, e o worker está vivo e o envio está estacionado
+ * até a janela abrir. Enquanto o adiamento era silencioso, as duas só se
+ * pareciam — e o orçamento de ~11h de `MAX_ACTION_RECHECKS` era gasto por
+ * espera legítima, matando o enrollment com um motivo falso
+ * (`action_turn_never_completed`) enquanto o envio ainda ia acontecer.
+ */
+export const EVENTO_ACAO_ADIADA = "action_deferred";
+
+/**
+ * Rechecks ociosos da ação NESTA estadia — o número que o dead-man deve medir.
+ *
+ * Idêntico a `occupancyEventCount` enquanto não houver adiamento (o dead-man
+ * continua exatamente tão severo com worker morto quanto antes); a diferença é
+ * que ele PARA no último `action_deferred`. Cada adiamento é uma prova de vida
+ * nova, e o que se conta é a ociosidade DEPOIS dela.
+ */
+export function rechecksOciososDaAcao(events: EnrollmentEventRef[], nodeId: string): number {
+  let n = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const evento = events[i]!;
+    if (evento.node_id !== nodeId) break;
+    if (evento.event_type === EVENTO_ACAO_ADIADA) return n;
+    n++;
+  }
+  return n;
 }
 
 /**
@@ -159,7 +245,7 @@ export type EdgeMatch =
  * escreveu.
  */
 export function classEdgeMatch(
-  node: Extract<FlowNode, { type: "ai_classify" }>,
+  node: Extract<FlowNode, { type: "ai_classify" | "match_reply" }>,
   classe: string,
 ): EdgeMatch {
   const ramo = nodeBranches(node).find(
@@ -206,9 +292,98 @@ export function selectEdge(edges: FlowEdge[], from: string, match: EdgeMatch): F
  * already start this wait" is exactly "does the event for the PRIOR step on
  * this node exist".
  */
+export function occupancyEventCount(events: EnrollmentEventRef[], nodeId: string): number {
+  let n = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]!.node_id !== nodeId) break;
+    n++;
+  }
+  return n;
+}
+
+/**
+ * O turno de envio desta estadia no `action` já fechou (`action_sent`).
+ * Se o enrollment ainda aponta pro action, foi corrida com `action_recheck`
+ * (ou update perdido no completeTurn) — o motor deve avançar, não rechecar.
+ */
+export function actionTurnCompleted(events: EnrollmentEventRef[], nodeId: string): boolean {
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]!.node_id !== nodeId) break;
+    if (events[i]!.event_type === "action_sent") return true;
+  }
+  return false;
+}
+
+export function repeatTakenFromEvents(events: EnrollmentEventRef[], nodeId: string): number {
+  return events.filter(
+    (e) => e.node_id === nodeId && typeof e.payload?.repeat_index === "number",
+  ).length;
+}
+
+export function repeatTotalFromEvents(events: EnrollmentEventRef[], nodeId: string): number | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const total = events[i]!.payload?.repeat_total;
+    if (events[i]!.node_id === nodeId && typeof total === "number") return total;
+  }
+  return null;
+}
+
+export function latestRepeatIndex(events: EnrollmentEventRef[]): { index: number; total: number } | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const index = events[i]!.payload?.repeat_index;
+    const total = events[i]!.payload?.repeat_total;
+    if (typeof index === "number" && typeof total === "number") return { index, total };
+  }
+  return null;
+}
+
 export function resolveWaitPhase(events: EnrollmentEventRef[], nodeId: string, stepsTaken: number): boolean {
   const priorKey = `${nodeId}:${stepsTaken - 1}`;
   return events.some((e) => e.node_id === nodeId && e.idempotency_key === priorKey);
+}
+
+/**
+ * Passos é número, mas o formulário gravou por meses o que se DIGITAVA — texto.
+ * Com `"3"`, `gte` nunca era verdadeiro e `neq` sempre era: a regra aparecia
+ * pronta no card e decidia sozinha. Lê o número que a pessoa escreveu; texto que
+ * não é número segue como está (e o publish o recusa).
+ */
+function valorDePassos(value: string | number): string | number {
+  if (typeof value === "number") return value;
+  const limpo = value.trim();
+  const n = Number(limpo);
+  return limpo !== "" && Number.isFinite(n) ? n : value;
+}
+
+/**
+ * O evento que registra a classe que o `ai_classify` escolheu — a fonte do
+ * "Desfecho do passo anterior" (é o mesmo evento que a tela de histórico lê).
+ */
+const EVENTO_DE_CLASSIFICACAO = "ai_classified";
+
+/**
+ * O desfecho do último passo que DECIDIU algo: a classe escolhida pelo
+ * `ai_classify` mais recente da inscrição. `null` quando ainda não houve
+ * classificação (fluxo que nunca passou por um `ai_classify`, ou classificação
+ * que terminou sem classe).
+ *
+ * ⚠️ Este dado existia como CONTRATO (o rótulo "Desfecho do passo anterior" está
+ * em `vocabulario.ts`, o campo está no enum do `graph-schema.ts` e a tela o
+ * oferece) e não como dado: o motor montava `LeadFacts.last_outcome` como `null`
+ * FIXO em `engine.ts`, então a condição escrita com ele era decorativa — o dono
+ * da VPS montava o filtro e o follow-up ignorava. Era pior com `neq`, porque
+ * `null !== "x"` é `true` e o fluxo mandava TODO lead pelo ramo da negativa.
+ *
+ * `events` chega na ordem do banco (`created_at` ascendente) — o ÚLTIMO evento de
+ * classificação é o desfecho vigente, não importa quantos passos atrás ele ficou.
+ */
+export function ultimoDesfechoDe(events: EnrollmentEventRef[]): string | null {
+  for (const evento of [...events].reverse()) {
+    if (evento.event_type !== EVENTO_DE_CLASSIFICACAO) continue;
+    const classe = evento.payload?.class;
+    if (typeof classe === "string" && classe.length > 0) return classe;
+  }
+  return null;
 }
 
 function evaluateCheck(
@@ -229,17 +404,31 @@ function evaluateCheck(
     return false;
   }
 
+  // ⚠️ Desconhecido não satisfaz NEGAÇÃO.
+  //
+  // Sem esta linha, `neq` comparava `null` com o valor e respondia `true` — ou
+  // seja, "não foi X" valia para TODO lead, inclusive o que nunca foi
+  // classificado. É a segunda metade do defeito do "Desfecho do passo anterior":
+  // com o campo alimentado, o lead cujo `ai_classify` ainda não rodou (ou que
+  // terminou sem classe) passaria por qualquer condição escrita como negação, e
+  // o fluxo seguiria pelo ramo errado em silêncio.
+  //
+  // `eq` e `contains` já eram falsos com `null` — negar não pode ser a única
+  // porta que a ausência de dado abre. Ausência não prova a negativa: um lead
+  // sem classificação não é um lead "que não foi hot".
+  if (actual === null) return false;
+  const expected = check.field === "steps_taken" ? valorDePassos(check.value) : check.value;
   switch (check.op) {
     case "eq":
-      return actual === check.value;
+      return actual === expected;
     case "neq":
-      return actual !== check.value;
+      return actual !== expected;
     case "gte":
-      return typeof actual === "number" && typeof check.value === "number" && actual >= check.value;
+      return typeof actual === "number" && typeof expected === "number" && actual >= expected;
     case "lte":
-      return typeof actual === "number" && typeof check.value === "number" && actual <= check.value;
+      return typeof actual === "number" && typeof expected === "number" && actual <= expected;
     case "contains":
-      return typeof actual === "string" && typeof check.value === "string" && actual.includes(check.value);
+      return typeof actual === "string" && typeof expected === "string" && actual.includes(expected);
   }
 }
 
@@ -272,6 +461,8 @@ export function processNode(input: {
   clock: () => Date;
   waitElapsed?: boolean;
   wokeEarly?: boolean;
+  /** Last inbound `messages.body` for this contact/conversation — engine loads on `match_reply` + wokeEarly. */
+  lastInboundBody?: string;
   /** action occupancy guard: a `turn_enqueued` event for THIS stay on the action node already
    *  exists (an entry/recheck happened before). Resolved by the engine via `resolveWaitPhase`
    *  — same prior-step-event check as `wait`. When true, the send turn is in flight: DON'T
@@ -280,6 +471,8 @@ export function processNode(input: {
   /** action dead-man counter: number of events already accumulated on this action node — used to
    *  bound rechecks so a turn that never completes routes to `dead` instead of looping forever. */
   actionRecheckCount?: number;
+  /** action: `action_sent` já existe nesta estadia — o envio fechou; avançar (sara corrida com recheck). */
+  actionCompleted?: boolean;
   /** trigger: as esperas adaptativas do grafo pinado (`coletarEsperasAdaptativas`). Vazio/ausente
    *  ⇒ não há o que planejar e o acionamento NÃO paga uma chamada de modelo. */
   smartWaits?: EsperaAdaptativa[];
@@ -289,6 +482,12 @@ export function processNode(input: {
   /** trigger dead-man counter: eventos já acumulados no nó trigger — limita os rechecks para que
    *  um turno de planejamento que nunca volta siga SEM plano em vez de esperar para sempre. */
   planRecheckCount?: number;
+  /** `repeat`: quantas voltas deste nó já saíram por `body` (eventos com repeat_index). */
+  repeatTaken?: number;
+  /** `repeat`: N armado na primeira visita; null = ainda precisa parsear lastInboundBody. */
+  repeatTotal?: number | null;
+  /** Próximo nó pela aresta `always` — a ação olha o `match_reply` seguinte para pular o envio. */
+  proximo?: FlowNode | null;
 }): NodeResult {
   const {
     node,
@@ -298,11 +497,16 @@ export function processNode(input: {
     lead,
     waitElapsed,
     wokeEarly,
+    lastInboundBody,
     actionEnqueued,
     actionRecheckCount,
+    actionCompleted,
     smartWaits,
     planEnqueued,
     planRecheckCount,
+    repeatTaken,
+    repeatTotal,
+    proximo,
   } = input;
 
   switch (node.type) {
@@ -333,6 +537,13 @@ export function processNode(input: {
     }
 
     case "wait": {
+      // Resposta do lead corta a espera: o timer é teto (ninguém respondeu),
+      // não um atraso obrigatório depois de cada envio.
+      if (wokeEarly) {
+        const edge = selectEdge(edges, node.id, { type: "always" });
+        if (!edge) return { kind: "fail", error: `wait node "${node.id}" has no outbound edge after elapsing` };
+        return { kind: "advance", next_node_id: edge.target, next_eval_at: clock() };
+      }
       if (!waitElapsed) {
         // Adaptativo: o instante vem do plano decidido no acionamento. Sem plano
         // legível para ESTE nó (enrollment anterior à feature, fluxo v1, jsonb
@@ -351,7 +562,16 @@ export function processNode(input: {
             : planejada === null
               ? node.config.max_ms
               : clampEspera(planejada.escolhido_ms, node.config.min_ms, node.config.max_ms).escolhido_ms;
-        return { kind: "wait", next_eval_at: new Date(clock().getTime() + durationMs) };
+        // Espera imune dorme: o status tira a inscrição do alcance da
+        // reatividade (que decide por status, sem carregar o grafo) e libera o
+        // slot único anti-spam enquanto ela espera. Quem a acorda continua sendo
+        // o `next_eval_at` abaixo, pelo mesmo claim — não há segundo agendador.
+        const imune = node.config.mode === "fixed" && node.config.immune_to_reply === true;
+        return {
+          kind: "wait",
+          next_eval_at: new Date(clock().getTime() + durationMs),
+          ...(imune ? { wake_status: "dormente" as const } : {}),
+        };
       }
       const edge = selectEdge(edges, node.id, { type: "always" });
       if (!edge) return { kind: "fail", error: `wait node "${node.id}" has no outbound edge after elapsing` };
@@ -402,6 +622,107 @@ export function processNode(input: {
       return { kind: "advance", next_node_id: edge.target, next_eval_at: clock() };
     }
 
+    case "match_reply": {
+      if (!waitElapsed && !wokeEarly) {
+        if (node.config.save_to && destinoJaPreenchido(lead, node.config.save_to)) {
+          const modo = modoSeJaExiste(node);
+          if (modo === "skip") {
+            const edge = selectEdge(edges, node.id, { type: "always" });
+            if (!edge) {
+              return { kind: "fail", error: `match_reply node "${node.id}" has no fallback edge to skip` };
+            }
+            return { kind: "advance", next_node_id: edge.target, next_eval_at: clock() };
+          }
+          if (modo === "confirm") {
+            const valor =
+              node.config.save_to.kind === "contact_name"
+                ? (lead.contact_name ?? "").trim()
+                : String(lead.custom_fields?.[node.config.save_to.key] ?? "").trim();
+            return {
+              kind: "enqueue_turn",
+              purpose: "send_message",
+              wake_status: "waiting_reply",
+              fixed_body: fraseDeConfirmacao(
+                valor,
+                node.config.save_to.kind === "contact_name" ? "contact_name" : "lead_custom",
+              ),
+            };
+          }
+        }
+        return {
+          kind: "wait",
+          next_eval_at: new Date(clock().getTime() + node.config.grace_timeout_ms),
+          wake_status: "waiting_reply",
+        };
+      }
+      if (wokeEarly) {
+        const body = (lastInboundBody ?? "").trim().toLowerCase();
+        const hit =
+          node.config.save_to !== undefined
+            ? undefined
+            : node.config.branches.find((b) => {
+                const needle = b.pattern.trim().toLowerCase();
+                if (needle.length === 0) return false;
+                return b.op === "eq" ? body === needle : body.includes(needle);
+              });
+        const edge = hit
+          ? selectEdge(edges, node.id, { type: "branch", branch_id: hit.id })
+          : selectEdge(edges, node.id, { type: "always" }) ??
+            (() => {
+              const ramo = node.config.branches.find((b) => b.id !== NO_REPLY_BRANCH_ID);
+              return ramo ? selectEdge(edges, node.id, { type: "branch", branch_id: ramo.id }) : null;
+            })();
+        if (!edge) {
+          return {
+            kind: "fail",
+            error: `match_reply node "${node.id}" has no edge for branch "${hit?.id ?? "else"}" (fallback also missing)`,
+          };
+        }
+        return { kind: "advance", next_node_id: edge.target, next_eval_at: clock() };
+      }
+      const edge = selectEdge(edges, node.id, classEdgeMatch(node, NO_REPLY_BRANCH_ID));
+      if (!edge) {
+        return {
+          kind: "fail",
+          error: `match_reply node "${node.id}" has no edge for class "no_reply" (fallback also missing)`,
+        };
+      }
+      return { kind: "advance", next_node_id: edge.target, next_eval_at: clock() };
+    }
+
+    case "repeat": {
+      const taken = repeatTaken ?? 0;
+      let total = repeatTotal ?? null;
+      if (total === null) {
+        const parsed = parseReplyCount(lastInboundBody, node.config.max_count);
+        if (parsed === null) {
+          const edge = selectEdge(edges, node.id, { type: "always" });
+          if (!edge) {
+            return { kind: "fail", error: `repeat node "${node.id}" has no fallback edge for an unreadable count` };
+          }
+          return { kind: "advance", next_node_id: edge.target, next_eval_at: clock() };
+        }
+        total = parsed;
+      }
+      if (taken >= total) {
+        const edge = selectEdge(edges, node.id, { type: "branch", branch_id: REPEAT_DONE_BRANCH_ID });
+        if (!edge) {
+          return { kind: "fail", error: `repeat node "${node.id}" has no edge for branch "${REPEAT_DONE_BRANCH_ID}"` };
+        }
+        return { kind: "advance", next_node_id: edge.target, next_eval_at: clock(), repeat: { index: taken, total } };
+      }
+      const edge = selectEdge(edges, node.id, { type: "branch", branch_id: REPEAT_BODY_BRANCH_ID });
+      if (!edge) {
+        return { kind: "fail", error: `repeat node "${node.id}" has no edge for branch "${REPEAT_BODY_BRANCH_ID}"` };
+      }
+      return {
+        kind: "advance",
+        next_node_id: edge.target,
+        next_eval_at: clock(),
+        repeat: { index: taken + 1, total },
+      };
+    }
+
     case "action": {
       // At-most-once send: enqueue the turn EXACTLY ONCE per occupancy. First entry
       // (no prior occupancy event) enqueues; a recheck fired while the turn is still in
@@ -410,15 +731,31 @@ export function processNode(input: {
       // which the action node lacked (steps_taken increments every recheck, so the
       // `${node}:${steps}` idempotency_key was a FRESH key each tick → a 2nd job → a 2nd
       // real send that the send sink's (job_id,seq) dedup can't catch).
-      if (!actionEnqueued) {
+      if (!actionEnqueued && !actionCompleted) {
+        if (
+          proximo?.type === "match_reply" &&
+          proximo.config.save_to &&
+          destinoJaPreenchido(lead, proximo.config.save_to)
+        ) {
+          const modo = modoSeJaExiste(proximo);
+          if (modo === "skip" || modo === "confirm") {
+            const edge = selectEdge(edges, node.id, { type: "always" });
+            if (!edge) return { kind: "fail", error: `action node "${node.id}" has no outbound edge` };
+            return { kind: "advance", next_node_id: edge.target, next_eval_at: clock() };
+          }
+        }
         return { kind: "enqueue_turn", purpose: "send_message", wake_status: "active" };
       }
-      // Dead-man: the turn never completed (worker down / turn permanently failing). Never
-      // re-enqueue, never wait forever — after MAX_ACTION_RECHECKS idle rechecks give up.
-      // ponytail: recheck budget is counted per-node over the enrollment's lifetime, so a
-      // flow that LOOPS back to the same action node shares the budget (re-sending on a
-      // loop is itself an anti-ban smell). Precise per-occupancy counting would need the
-      // event_type, which EnrollmentEventRef doesn't carry — upgrade there if loops appear.
+      // Envio já fechou (action_sent) mas o enrollment ainda está no action —
+      // típico de corrida: completeTurn avançou e um recheck concorrente reverteu.
+      if (actionCompleted) {
+        const edge = selectEdge(edges, node.id, { type: "always" });
+        if (!edge) return { kind: "fail", error: `action node "${node.id}" has no outbound edge` };
+        return { kind: "advance", next_node_id: edge.target, next_eval_at: clock() };
+      }
+      // Dead-man: the turn never completed. Rechecks count THIS occupancy only
+      // (`occupancyEventCount`) so a `repeat` that volta no mesmo nó de ação não
+      // herda o orçamento das voltas anteriores.
       if ((actionRecheckCount ?? 0) >= MAX_ACTION_RECHECKS) {
         return { kind: "dead", reason: "action_turn_never_completed" };
       }

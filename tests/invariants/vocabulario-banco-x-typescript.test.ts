@@ -49,6 +49,20 @@ const PARES: Array<{
   simbolo: string;
 }> = [
   {
+    tabela: "extension_operations",
+    coluna: "kind",
+    // O recibo das extensões (0271). Quatro cópias no TypeScript viraram uma; um kind
+    // novo que nascesse só no banco faria o navegador descartar o recibo como inválido.
+    arquivo: "lib/extensions/vocabulario.ts",
+    simbolo: "EXTENSION_OPERATION_KINDS",
+  },
+  {
+    tabela: "extension_operations",
+    coluna: "status",
+    arquivo: "lib/extensions/vocabulario.ts",
+    simbolo: "EXTENSION_OPERATION_STATUSES",
+  },
+  {
     tabela: "crm_lead_activities",
     coluna: "actor_kind",
     // lib/leads/activity-emitter.ts → ActivityActorKind
@@ -170,6 +184,14 @@ const PARES: Array<{
     simbolo: "ChannelProvider",
   },
   {
+    tabela: "messages",
+    coluna: "sent_via",
+    // lib/types/messaging.ts → SentVia. A union deixa de viver inline em Message
+    // para o gate ler a fonte real em vez de manter uma terceira lista manual.
+    arquivo: "lib/types/messaging.ts",
+    simbolo: "SentVia",
+  },
+  {
     tabela: "followup_enrollments",
     coluna: "status",
     // hooks/followup/useFollowupQueue.ts → FollowupEnrollmentStatus.
@@ -206,6 +228,184 @@ const PARES: Array<{
     // extrator não precisa escolher.
     arquivo: "lib/agent-engine/edge/llm/orcamento.ts",
     simbolo: "ModoDeOrcamento",
+  },
+  {
+    tabela: "followup_flow_pointers",
+    coluna: "surface",
+    // lib/followup/api-schemas.ts → FOLLOWUP_FLOW_SURFACES (tupla `as const`).
+    // O type alias `FollowupFlowSurface = (typeof …)[number]` não carrega
+    // literais no fonte — o extrator lê a const, que é a fonte em runtime
+    // (`z.enum` / UI) e a que o CHECK do banco precisa espelhar.
+    arquivo: "lib/followup/api-schemas.ts",
+    simbolo: "FOLLOWUP_FLOW_SURFACES",
+  },
+  {
+    tabela: "webhook_lead_captures",
+    coluna: "outcome",
+    // lib/schemas/lead-captures.ts → DESFECHOS_DA_CAPTACAO.
+    //
+    // A tela pinta um badge por valor ("Virou lead" / "Reenvio" / "Não entrou")
+    // e filtra por ele. Um desfecho novo só no CHECK viraria linha sem rótulo e
+    // opção de filtro que não existe; só no TypeScript viraria `23514` num
+    // INSERT que roda dentro da rota PÚBLICA de captação — e ali o registro é
+    // fire-and-forget, ou seja, o histórico simplesmente não apareceria.
+    arquivo: "lib/schemas/lead-captures.ts",
+    simbolo: "DESFECHOS_DA_CAPTACAO",
+  },
+  {
+    tabela: "automation_rule_runs",
+    coluna: "status",
+    // hooks/webhooks/useAutomationRules.ts → AutomationRunStatus.
+    //
+    // O par aponta para o tipo da TELA porque é ela quem precisa conhecer TODOS
+    // os estados: `statusBadgeLabel` mapeia cada um para um texto em português,
+    // e um valor sem entrada cai no rótulo de "Parcial" — dizendo que algo
+    // falhou quando nada foi sequer tentado.
+    //
+    // Nasce com a 0175, que acrescentou `adiado` (a espera é um estado; sem ele
+    // a aba Atividade não mostrava NADA enquanto a regra aguardava a janela).
+    arquivo: "hooks/webhooks/useAutomationRules.ts",
+    simbolo: "AutomationRunStatus",
+  },
+  {
+    tabela: "crm_tasks",
+    coluna: "priority",
+    // lib/tarefas/tipos.ts → PRIORIDADES_DA_TAREFA. Nasce com o par no mesmo
+    // commit da migration 0210, que é a lição desta lista: todos os que
+    // divergiram divergiram por terem nascido sozinhos.
+    arquivo: "lib/tarefas/tipos.ts",
+    simbolo: "PRIORIDADES_DA_TAREFA",
+  },
+  {
+    tabela: "crm_tasks",
+    coluna: "status",
+    // lib/tarefas/tipos.ts → SITUACOES_DA_TAREFA.
+    arquivo: "lib/tarefas/tipos.ts",
+    simbolo: "SITUACOES_DA_TAREFA",
+  },
+  // Módulo VoIP (0347/0348) — status fica de fora: é vocabulário de terceiro
+  // (binário WaCalls, compartilhado), mapeado na API — não é 1:1 com TS aqui.
+  {
+    tabela: "voice_calls",
+    coluna: "direction",
+    // lib/voip/call-vocabulary.ts -> CallDirection
+    arquivo: "lib/voip/call-vocabulary.ts",
+    simbolo: "CallDirection",
+  },
+  {
+    tabela: "voice_calls",
+    coluna: "handled_by",
+    // lib/voip/call-vocabulary.ts -> CallHandledBy
+    arquivo: "lib/voip/call-vocabulary.ts",
+    simbolo: "CallHandledBy",
+  },
+  {
+    tabela: "phone_numbers",
+    coluna: "routing_mode",
+    // lib/voip/call-vocabulary.ts -> PhoneNumberRoutingMode
+    arquivo: "lib/voip/call-vocabulary.ts",
+    simbolo: "PhoneNumberRoutingMode",
+  },
+  {
+    tabela: "ai_agents",
+    coluna: "channel",
+    // lib/voip/call-vocabulary.ts -> AiAgentChannel
+    arquivo: "lib/voip/call-vocabulary.ts",
+    simbolo: "AiAgentChannel",
+  },
+  {
+    tabela: "agent_case_chat_messages",
+    coluna: "author_kind",
+    // lib/ai/conversa-do-caso/vocabulario.ts → CASE_CHAT_AUTHOR_KINDS (tupla
+    // `as const`). O par aponta para a TUPLA e não para o type alias
+    // `CaseChatAuthorKind`, que é derivado dela e não carrega literal nenhum no
+    // fonte — mesma escolha de `FOLLOWUP_FLOW_SURFACES`.
+    //
+    // Nasce no MESMO commit da migration 0281, que é a lição desta lista: todo
+    // par que divergiu divergiu por ter nascido sozinho. Um `author_kind` novo
+    // só no CHECK viraria linha que o motor não sabe renderizar; só no
+    // TypeScript viraria `23514` num INSERT dentro da rota do chat — e ali a
+    // linha da pergunta é gravada ANTES da chamada ao modelo, então o sintoma
+    // seria a pergunta sumir em vez de a resposta falhar.
+    arquivo: "lib/ai/conversa-do-caso/vocabulario.ts",
+    simbolo: "CASE_CHAT_AUTHOR_KINDS",
+  },
+  {
+    tabela: "passagens_de_atendimento",
+    coluna: "motor",
+    // lib/escalacao/passagem.ts → MOTORES_DA_PASSAGEM (tupla `as const`, como
+    // `CASE_CHAT_AUTHOR_KINDS`). Os quatro pares desta tabela nascem no MESMO
+    // commit da migration 0291 — a lição desta lista, e a razão de ela existir.
+    arquivo: "lib/escalacao/passagem.ts",
+    simbolo: "MOTORES_DA_PASSAGEM",
+  },
+  {
+    tabela: "passagens_de_atendimento",
+    coluna: "origem",
+    // lib/escalacao/passagem.ts → ORIGENS_DA_PASSAGEM. Treze valores, um por
+    // caminho de código que passa conversa — o que mais cresce dos quatro, e o
+    // que mais tem chance de nascer só de um lado.
+    arquivo: "lib/escalacao/passagem.ts",
+    simbolo: "ORIGENS_DA_PASSAGEM",
+  },
+  {
+    tabela: "passagens_de_atendimento",
+    coluna: "motivo_codigo",
+    // lib/escalacao/passagem.ts → MOTIVOS_DA_PASSAGEM. Superconjunto de
+    // `HandoffReason` (`lib/ai/handoff/orchestrator.ts`) mais `caso_escalado` e
+    // `suspected_optout`; o par aponta para O QUE O BANCO ACEITA, e não para o
+    // contrato do motor — amarrar os dois faria uma mudança lá virar `23514`
+    // num INSERT de caminho pouco exercitado.
+    arquivo: "lib/escalacao/passagem.ts",
+    simbolo: "MOTIVOS_DA_PASSAGEM",
+  },
+  {
+    tabela: "passagens_de_atendimento",
+    coluna: "aviso_motivo_codigo",
+    // lib/escalacao/passagem.ts → MOTIVOS_DO_AVISO. A coluna é `null`-ável (a
+    // ausência significa "ninguém tentou avisar"), e o CHECK tem a forma
+    // `col IS NULL OR col = ANY (...)`, que `literaisSeDefine` reconhece como
+    // DEFINIDORA — a permissão de nulo não descaracteriza o vocabulário.
+    arquivo: "lib/escalacao/passagem.ts",
+    simbolo: "MOTIVOS_DO_AVISO",
+  },
+  {
+    tabela: "entregas_de_aviso_de_caso",
+    coluna: "status",
+    // lib/escalacao/vocabulario-do-aviso.ts → STATUS_DA_ENTREGA_DE_AVISO (tupla
+    // `as const`, como CASE_CHAT_AUTHOR_KINDS). Nasce no MESMO commit da
+    // migration 0292 — a lição desta lista, e a razão de ela existir.
+    //
+    // Um status novo só no CHECK viraria linha que a tela de avisos não sabe
+    // rotular; só no TypeScript viraria `23514` no UPDATE que o handler faz
+    // DEPOIS de a mensagem já ter saído — o pior instante possível, porque ali
+    // a entrega fica `pendente` com o aviso no celular de alguém, e a rodada
+    // seguinte a reenviaria.
+    arquivo: "lib/escalacao/vocabulario-do-aviso.ts",
+    simbolo: "STATUS_DA_ENTREGA_DE_AVISO",
+  },
+  {
+    tabela: "entregas_de_aviso_de_caso",
+    coluna: "erro_codigo",
+    // lib/escalacao/vocabulario-do-aviso.ts → ERROS_DA_ENTREGA_DE_AVISO. A
+    // coluna é `null`-ável (ausência = não houve erro) e o CHECK tem a forma
+    // `col IS NULL OR col = ANY (...)`, que `literaisSeDefine` reconhece como
+    // DEFINIDORA — a permissão de nulo não descaracteriza o vocabulário.
+    //
+    // `FRASE_DO_ERRO_DO_AVISO` é `satisfies Record<ErroDaEntregaDeAviso,string>`
+    // no mesmo arquivo: um código sem frase para de compilar, em vez de virar
+    // identificador cru no rosto de quem opera.
+    arquivo: "lib/escalacao/vocabulario-do-aviso.ts",
+    simbolo: "ERROS_DA_ENTREGA_DE_AVISO",
+  },
+  {
+    tabela: "team_invites",
+    coluna: "role",
+    // lib/schemas/team.ts → ROLES (tupla `as const`). O `z.enum(ROLES)` das
+    // rotas de convite e o CHECK da migration 0238 espelham a mesma lista;
+    // nasce com o par no mesmo commit da migration — a lição desta lista.
+    arquivo: "lib/schemas/team.ts",
+    simbolo: "ROLES",
   },
 ];
 
@@ -304,7 +504,6 @@ function valoresDoCheck(tabela: string, coluna: string): string[] {
   return definidoras[0]?.valores ?? [];
 }
 
-
 /**
  * Os literais do union type, LIDOS DO ARQUIVO — nunca transcritos.
  *
@@ -351,12 +550,28 @@ function literaisDoUnionType(arquivo: string, simbolo: string): string[] {
   // Prosa em português tem ponto e vírgula. O extrator é que não podia depender
   // de a prosa não ter.
   const semComentarios = fonte.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-  const decl = new RegExp(`type\\s+${simbolo}\\s*=([^;]*);`, "s").exec(semComentarios);
+
+  // DUAS FORMAS, e as duas são vocabulário legítimo neste repo:
+  //
+  //   type X = "a" | "b";                 ← union puro
+  //   const X = ["a", "b"] as const;      ← tupla congelada
+  //
+  // A segunda existe porque o Zod precisa do ARRAY em runtime (`z.enum(X)`), e
+  // escrever o union ao lado seria a terceira lista — exatamente o que este
+  // invariante existe para proibir. O extrator lia só a primeira e mandava
+  // "ENSINE O EXTRATOR"; esta é a lição aprendida, e não uma exceção aberta:
+  // as duas formas caem no MESMO caminho de comparação abaixo.
+  const decl =
+    new RegExp(`type\\s+${simbolo}\\s*=([^;]*);`, "s").exec(semComentarios) ??
+    new RegExp(`const\\s+${simbolo}\\s*=\\s*(\\[[^\\]]*\\])\\s*as\\s+const`, "s").exec(
+      semComentarios,
+    );
   if (!decl) {
     throw new Error(
-      `extrator de vocabulário: não achei \`type ${simbolo} = ...;\` em ${arquivo}. ` +
-        `Se o tipo virou \`const ... as const\` ou mudou de nome, ENSINE O EXTRATOR — ` +
-        `deixar isto falhar em silêncio devolveria lista vazia e o par passaria sem ler nada.`,
+      `extrator de vocabulário: não achei \`type ${simbolo} = ...;\` nem ` +
+        `\`const ${simbolo} = [...] as const\` em ${arquivo}. Se o símbolo mudou de nome ou ` +
+        `de forma, ENSINE O EXTRATOR — deixar isto falhar em silêncio devolveria lista vazia ` +
+        `e o par passaria sem ler nada.`,
     );
   }
 

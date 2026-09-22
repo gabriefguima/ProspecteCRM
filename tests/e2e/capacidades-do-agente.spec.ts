@@ -22,6 +22,8 @@ import * as path from "node:path";
 
 import { test, expect, type Page } from "@playwright/test";
 
+import { TETO_TOOLS_POR_AGENTE } from "@/lib/mcp/tools/selecao-por-pacote";
+
 import { loginComoAdmin } from "./helpers/login-admin";
 
 const CREDS_PATH = path.join(process.cwd(), ".e2e-creds.json");
@@ -61,9 +63,46 @@ let creds = loadCreds();
 const AGENTE = creds.capacidades!.agent_id;
 
 /** O que o seed deixa ligado — o cenário conhecido de onde os casos partem. */
-const TOOLS_DO_SEED = ["crm_get_lead", "crm_move_lead_stage", "crm_list_leads"];
+const TOOLS_DO_SEED = [
+  // As três originais primeiro: o caso do teto desliga `TOOLS_DO_SEED[2]` para
+  // liberar exatamente uma vaga, e a ordem é o que mantém esse índice válido.
+  "crm_get_lead",
+  "crm_move_lead_stage",
+  "crm_list_leads",
+  // ⚠️ AS SEIS ABAIXO NÃO SÃO ENFEITE: elas existem para o cenário ESTOURAR.
+  //
+  // A jornada do teto (issue #162) só existe se a soma passar do teto: eram 3
+  // do seed + 18 de "Atender" = 21 contra teto 20, e a tela recusava dizendo
+  // "faltam 1 vaga". Com teto 25 essas mesmas 21 passam, a recusa nunca acontece
+  // e o caso vira um clique que sempre dá certo — verde sem medir nada.
+  //
+  // Nove reproduzem a MESMA aritmética no teto novo: 9 + 17 = 26 > 25, recusa
+  // por 1 vaga; desligar uma deixa 8 + 17 = 25, que é o teto exato e passa.
+  //
+  // Os 17 são o pacote "Atender" DEPOIS da #528, e foi ela que mudou o número:
+  // a crítica que o pacote contava (o envio de WhatsApp, que o motor descarta
+  // em todo turno) deixou de ser oferecida, e com ela saiu uma vaga da conta.
+  // Com as oito antigas, 8 + 17 = 25 exatas — o pacote passaria a caber e o
+  // caso de recusa morreria calado, que é o desfecho que se quer evitar.
+  //
+  // As escolhidas ficam FORA do pacote "Atender" de propósito — se alguma
+  // estivesse dentro, a união seria menor que a soma e a conta acima não valeria.
+  // Quatro são a família de agenda, que é o assunto do defeito que subiu o teto.
+  "crm_find_free_slots",
+  "crm_list_appointments",
+  "crm_book_appointment",
+  "crm_reschedule_appointment",
+  "crm_list_pipelines",
+  // A NONA: leitura pura, fora de "Atender" — que é o que a conta acima exige.
+  // Existe para a aritmética continuar estourando depois da #528; sem ela o
+  // cenário de recusa vira um clique que sempre dá certo.
+  "crm_list_knowledge_sources",
+];
 
-/** A capacidade que não pode entrar por pacote. */
+/**
+ * A capacidade que não pode entrar por pacote — nem por clique (#528): o motor
+ * a descarta em todo turno, então a tela mostra o motivo e não deixa marcar.
+ */
 const ENVIO = "crm_send_whatsapp_message";
 /** Uma que entra: leitura pura, dentro de "Atender e responder". */
 const LEITURA = "crm_get_conversation_history";
@@ -178,13 +217,26 @@ test.describe("Configurar o que o agente pode fazer", () => {
     await abrirConfiguracao(page);
 
     const antes = await consumo(page);
-    expect(antes).toMatch(/de 20$/);
+    // A CONSTANTE, não o literal: este arquivo prendia o "20" em quatro pontos,
+    // e o teto subiu para 25 quando o dono do produto ficou sem como ligar as
+    // capacidades de agenda. Literal em asserção transforma decisão de produto
+    // em quebra de CI, e faz a próxima pessoa "consertar" o teste em vez de ler
+    // por que o número mudou.
+    expect(antes).toMatch(new RegExp(`de ${TETO_TOOLS_POR_AGENTE}$`));
 
     // O TETO ENTRA NA JORNADA (issue #162), e entra antes do clique.
     //
-    // Medido pela API servida em 2026-08-06: o catálogo tem 51 capacidades e
-    // "Atender" exige 18 vagas (17 automáticas + a crítica que o pacote
-    // deliberadamente NÃO liga). Com as 3 do seed dá 21, num teto de 20.
+    // "Atender" exige 17 vagas: 17 automáticas e nenhuma crítica — a única que
+    // ele tinha (o envio de WhatsApp) deixou de ser oferecida na #528, e com ela
+    // saiu uma vaga da conta. Com as 9 do seed dá 26, acima do teto de 25.
+    //
+    // ⚠️ AS 9 SÃO O QUE MANTÉM ESTE CASO VIVO. Eram 3, e 3 + 18 = 21 estourava o
+    // teto de 20. Quando o teto foi para 25 essas mesmas 21 passaram a caber: a
+    // recusa nunca aconteceria e o caso viraria um clique que sempre dá certo —
+    // verde sem medir nada, que é o pior desfecho para um teste de recusa. As 5
+    // novas entraram aí; a NONA entrou com a #528, que tirou uma vaga do pacote
+    // (8 + 17 = 25 exatas: o pacote caberia e a recusa sumiria de novo).
+    // Todas estão FORA de "Atender", senão a união seria menor que a soma.
     //
     // Antes da correção a tela aceitava o pacote, chegava a 20 exatas e deixava
     // o checkbox da crítica DESABILITADO — prometia uma escolha que o produto
@@ -220,30 +272,28 @@ test.describe("Configurar o que o agente pode fazer", () => {
     await page.getByTestId("lista-avancada").waitFor({ state: "visible" });
     await expect.poll(() => estaMarcada(page, LEITURA), { timeout: 5_000 }).toBe(true);
 
-    // …e a que fala com o cliente de verdade, não.
+    // …e a que fala com o cliente de verdade, não — e desde a #528 nem poderia:
+    // ela deixou de ser oferecível, por clique ou por pacote.
     expect(await estaMarcada(page, ENVIO)).toBe(false);
 
-    // Ela aparece separada, pedindo a marcação individual.
-    const bloco = page.getByTestId("criticas-atender");
-    await expect(bloco).toBeVisible();
-    await expect(bloco).toContainText(/o pacote não liga por você/i);
-    await expect(bloco).toContainText("Enviar mensagem no WhatsApp");
+    // Sem crítica oferecível não há bloco de crítica. Ele existia porque o envio
+    // ERA a crítica do pacote — que o pacote oferecia para o motor descartar.
+    await expect(page.getByTestId("criticas-atender")).toHaveCount(0);
+
+    // Mas a capacidade continua NA TELA, com o motivo escrito e o checkbox
+    // travado: sumir com ela esconderia do dono um caminho que ele já viu na
+    // configuração publicada. O que a #528 proíbe é oferecer sem poder cumprir.
+    await expect(page.getByTestId(`motivo-nao-marcavel-${ENVIO}`)).toBeVisible();
+    await expect(capacidade(page, ENVIO).locator("input[type=checkbox]")).toBeDisabled();
 
     expect(await consumo(page)).not.toBe(antes);
     await page
       .getByTestId("tool-picker")
       .screenshot({ path: path.join(EVIDENCIA, "w1-pacote-ligado-sem-envio.png") });
 
-    // Marcar à mão funciona — o humano pode, o pacote não.
-    await page
-      .getByTestId("criticas-atender")
-      .getByTestId(`capacidade-${ENVIO}`)
-      .locator("input[type=checkbox]")
-      .click();
-    await expect.poll(() => estaMarcada(page, ENVIO), { timeout: 5_000 }).toBe(true);
-
-    // E desligar a jornada leva a crítica junto: declarar que a jornada acabou
-    // e ficar com o direito de enviar mensagem seria a pior surpresa possível.
+    // Desligar a jornada desfaz o que ela ligou — e o envio segue fora, como
+    // sempre esteve: declarar que a jornada acabou e ficar com o direito de
+    // mandar mensagem seria a pior surpresa possível.
     await page.getByTestId("switch-pacote-atender").click();
     await expect.poll(() => estaMarcada(page, ENVIO), { timeout: 5_000 }).toBe(false);
     await expect.poll(() => estaMarcada(page, LEITURA), { timeout: 5_000 }).toBe(false);
@@ -274,7 +324,7 @@ test.describe("Configurar o que o agente pode fazer", () => {
     // Espera a configuração CARREGAR. Ler o estado antes disso devolve lista
     // vazia, e um teste que compara vazio com vazio passa sem medir nada.
     await expect(page.getByTestId("consumo-teto")).toHaveText(
-      `${TOOLS_DO_SEED.length} de 20`,
+      `${TOOLS_DO_SEED.length} de ${TETO_TOOLS_POR_AGENTE}`,
     );
 
     await page.getByTestId("switch-pacote-vender").click();
@@ -296,7 +346,7 @@ test.describe("Configurar o que o agente pode fazer", () => {
     await page.reload();
     await page.getByTestId("tool-picker").waitFor({ state: "visible" });
     await expect(page.getByTestId("consumo-teto")).toHaveText(
-      `${TOOLS_DO_SEED.length} de 20`,
+      `${TOOLS_DO_SEED.length} de ${TETO_TOOLS_POR_AGENTE}`,
     );
   });
 });

@@ -31,9 +31,12 @@ import { generateText, stepCountIs, type LanguageModel, type StopCondition, type
 // Repetir a URL aqui criaria dois lugares para consertar quando ela mudar.
 import {
   cabecalhosDeAtribuicaoOpenRouter,
+  DEEPSEEK_ENDPOINT,
   OPENROUTER_ENDPOINT,
 } from "@/lib/agent-engine/edge/llm/providers";
 import { CredentialUnavailableError, loadCredential } from "@/lib/ai/credentials";
+import { decidirElegibilidadeDaConversaViaSupabase } from "@/lib/ai/elegibilidade/consulta-supabase";
+import { ttlDaAutorizacaoMs } from "@/lib/ai/elegibilidade/gate";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { audit } from "@/lib/audit";
 import type { McpAuthResult } from "@/lib/mcp/auth";
@@ -180,6 +183,12 @@ export function buildModel(provider: string, apiKey: string, modelId: string): L
         baseURL: OPENROUTER_ENDPOINT,
         headers: cabecalhosDeAtribuicaoOpenRouter(),
       })(modelId);
+    // Mesma fábrica OpenAI-compatível que o registry de produção usa. Sem este
+    // caso, o dono que publicou em DeepSeek receberia `unsupported_provider` no
+    // ensaio enquanto o worker responderia a mensagem real — ensaio mais
+    // rígido que a produção mente sobre o que está quebrado.
+    case "deepseek":
+      return createOpenAI({ apiKey, baseURL: DEEPSEEK_ENDPOINT })(modelId);
     default:
       throw new Error(`unsupported_provider: ${provider}`);
   }
@@ -261,7 +270,15 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
     const { data: versionRaw } = await admin
       .from("ai_agent_versions")
       .select(
-        "id, organization_id, agent_id, system_prompt, provider, model, credential_id, tool_ids, channel_session_id, max_steps, token_budget, cost_budget_cents, history_message_window, history_token_window, handoff_keywords, handoff_tool_enabled, created_by",
+        // `pipeline_ids` e `knowledge_source_ids` ENTRAM no SELECT.
+        //
+        // A linha 445 lia `version.pipeline_ids` de um objeto que este SELECT
+        // nunca trouxe: o `?? []` do call site absorvia o `undefined` e o escopo
+        // ficava SEMPRE vazio neste runtime — a marcação da tela existia e não
+        // valia aqui. Coluna lida que o SELECT não pede é o defeito que
+        // `agent-version-columns-drift.test.ts` existe para pegar nas cópias
+        // vigiadas; esta não é uma delas.
+        "id, organization_id, agent_id, system_prompt, provider, model, credential_id, tool_ids, channel_session_id, max_steps, token_budget, cost_budget_cents, history_message_window, history_token_window, handoff_keywords, handoff_tool_enabled, created_by, pipeline_ids, knowledge_source_ids",
       )
       .eq("id", run.agent_version_id)
       .eq("organization_id", run.organization_id)
@@ -360,6 +377,30 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentResult> {
           waIdentity: conv.contacts?.wa_identity,
           waLid: conv.contacts?.wa_lid,
         });
+      }
+
+      // GATE DE ELEGIBILIDADE — este runtime legado (@deprecated, hoje só o
+      // dispatcher aposentado o alcança com envio real) TAMBÉM não pode
+      // responder uma conversa que uma origem elegível não autorizou. Mesma
+      // regra pura do drain/turno. Fail-closed: erro de leitura → falha o run
+      // antes de qualquer custo de LLM.
+      try {
+        const elegib = await decidirElegibilidadeDaConversaViaSupabase(admin, {
+          organizationId: run.organization_id,
+          conversationId: run.conversation_id,
+          agora: new Date(),
+          ttlMs: ttlDaAutorizacaoMs(process.env),
+        });
+        if (elegib !== null && !elegib.permite) {
+          return await failRun(run, "nao_elegivel_para_ia", `elegibilidade: ${elegib.motivo}`, startedAt);
+        }
+      } catch (err) {
+        return await failRun(
+          run,
+          "nao_elegivel_para_ia",
+          `elegibilidade indeterminada: ${err instanceof Error ? err.message.slice(0, 120) : "erro"}`,
+          startedAt,
+        );
       }
     }
 

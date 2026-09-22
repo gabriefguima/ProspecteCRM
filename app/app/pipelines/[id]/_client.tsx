@@ -1,10 +1,10 @@
 "use client";
 import { useCallback, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useT } from "@/hooks/i18n/useT";
 import { useBoard } from "@/hooks/kanban/useBoard";
-import { useSelection } from "@/hooks/selection/useSelection";
 
-function formatError(err: unknown): string {
+function formatError(err: unknown, t: (texto: string) => string): string {
   if (err instanceof Error) return err.message;
   if (err && typeof err === "object") {
     const obj = err as { message?: unknown; code?: unknown; details?: unknown; hint?: unknown };
@@ -15,7 +15,7 @@ function formatError(err: unknown): string {
     try {
       return JSON.stringify(err);
     } catch {
-      return "Erro desconhecido";
+      return t("Erro desconhecido");
     }
   }
   return String(err);
@@ -36,6 +36,7 @@ export function PipelinePageClient({
   pipelineId: string;
   initialName: string;
 }) {
+  const t = useT();
   const { data, isLoading, error, pulses, realtimeStatus, seguranca } = useBoard(pipelineId);
   const router = useRouter();
   const pathname = usePathname();
@@ -48,10 +49,21 @@ export function PipelinePageClient({
     },
     [router, pathname],
   );
-  const selection = useSelection();
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [newOpen, setNewOpen] = useState(false);
 
   const filteredLeads = data ? applyFilters(data.leads, filters) : [];
+  // NÃO é a conta do FilterBar: o seletor de filtro lista as três caixas
+  // (`marcadoresDoCard`: negócio, contato e conversa), e esta lista, a da tag em
+  // lote, só `lead.tags` — é lá que a ação em lote grava (#852). O `useMemo` é o
+  // mesmo cuidado de lá: solta no corpo, a conta roda em toda renderização
+  // e devolve um array NOVO a cada vez. E esta página re-renderiza a cada tecla
+  // da busca (o debounce do FilterBar mexe na query string) e a cada mudança de
+  // seleção de card.
+  const tagsDoQuadro = useMemo(
+    () => [...new Set((data?.leads ?? []).flatMap((l) => l.tags))].sort(),
+    [data?.leads],
+  );
 
   return (
     <div
@@ -83,17 +95,9 @@ export function PipelinePageClient({
         <h1 className="min-w-0 truncate text-2xl font-semibold tracking-tight">
           {data?.pipeline.name ?? initialName}
         </h1>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button
-            variant="outline"
-            onClick={selection.isActive ? selection.exit : selection.activate}
-          >
-            {selection.isActive ? "Cancelar seleção" : "Selecionar"}
-          </Button>
-          <Button onClick={() => setNewOpen(true)} disabled={!data}>
-            <Plus size={16} className="mr-2" /> Novo Lead
-          </Button>
-        </div>
+        <Button onClick={() => setNewOpen(true)} disabled={!data} className="shrink-0">
+          <Plus size={16} className="mr-2" /> {t("Novo Lead")}
+        </Button>
       </header>
       {data && (
         <NewLeadDialog
@@ -106,12 +110,11 @@ export function PipelinePageClient({
       <FilterBar filters={filters} onChange={setFilters} leads={data?.leads ?? []} />
       {error ? (
         <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm">
-          Não consegui carregar este funil:{" "}
-          {formatError(error)}
+          {t("Não consegui carregar este funil:")} {formatError(error, t)}
         </div>
       ) : isLoading || !data ? (
         <div className="flex flex-1 animate-pulse items-center justify-center text-muted-foreground">
-          Carregando…
+          {t("Carregando…")}
         </div>
       ) : (
         <KanbanBoard
@@ -120,16 +123,18 @@ export function PipelinePageClient({
           leads={filteredLeads}
           pulses={pulses}
           pipeline={data.pipeline}
-          selectedIds={selection.selectedIds}
-          onToggle={selection.toggle}
-          selectionMode={selection.isActive}
+          selectedIds={selectedIds}
+          onSelectionChange={setSelectedIds}
+          leadInicial={searchParams.get("lead")}
         />
       )}
       <BulkActionBar
-        selectedIds={selection.selectedIds}
+        selectedIds={selectedIds}
         stages={data?.stages ?? []}
         pipelineId={pipelineId}
-        onClear={selection.exit}
+        vocabulary={data?.pipeline.vocabulary ?? null}
+        tagsExistentes={tagsDoQuadro}
+        onClear={() => setSelectedIds([])}
       />
     </div>
   );

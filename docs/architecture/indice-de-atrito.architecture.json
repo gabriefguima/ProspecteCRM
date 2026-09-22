@@ -180,7 +180,23 @@
       "col": 7,
       "type": "frontend",
       "label": "CRMSidePanel (inbox)",
-      "sublabel": "demandas ANTES dos negócios · falha não vira lista vazia"
+      "sublabel": "demandas ANTES dos negócios · só campos do funil editáveis no lugar"
+    },
+    {
+      "id": "crmleads",
+      "lane": "demanda",
+      "col": 6,
+      "type": "table",
+      "label": "crm_leads",
+      "sublabel": "só os campos do funil no inbox — título e valor ficam no dossiê"
+    },
+    {
+      "id": "rotalead",
+      "lane": "humano",
+      "col": 8,
+      "type": "route",
+      "label": "PATCH /v1/leads/:id",
+      "sublabel": "o mesmo handler do dossiê — uma cópia no inbox divergiria"
     },
     {
       "id": "ponte",
@@ -229,6 +245,14 @@
       "type": "route",
       "label": "PATCH /v1/demandas/:id",
       "sublabel": "piso agent — quem atende é quem sabe o que vem a seguir"
+    },
+    {
+      "id": "passagens",
+      "lane": "entrada",
+      "col": 1,
+      "type": "table",
+      "label": "passagens_de_atendimento",
+      "sublabel": "uma linha por passagem IA→humano (0291): e o marco a partir do qual se mede se o cliente repetiu"
     }
   ],
   "edges": [
@@ -417,6 +441,36 @@
       "from": "rotademanda",
       "to": "demandas",
       "label": "update com filtro de org e `fechada_em is null` · audit"
+    },
+    {
+      "id": "e32",
+      "from": "crmleads",
+      "to": "rotasummary",
+      "label": "negócio do contato, com o schema do funil"
+    },
+    {
+      "id": "e33",
+      "from": "inbox",
+      "to": "rotalead",
+      "label": "grava o campo SEM sair da conversa"
+    },
+    {
+      "id": "e34",
+      "from": "rotalead",
+      "to": "crmleads",
+      "label": "PATCH · audit + lead_edited só do que mudou"
+    },
+    {
+      "id": "e35",
+      "from": "passagens",
+      "to": "fnatrito",
+      "label": "denominador = passagens em que o cliente VOLTOU a falar em 24h; sem fala nova nao ha repeticao a medir"
+    },
+    {
+      "id": "e36",
+      "from": "fnjaccard",
+      "to": "passagens",
+      "label": "o MESMO limiar 0,7 da repergunta compara a fala de depois com a de antes da passagem"
     }
   ],
   "cards": [

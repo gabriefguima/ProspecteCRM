@@ -51,6 +51,10 @@ describe("o ícone carrega para quem NÃO entrou", () => {
     expect(isPublicPath("/icon")).toBe(true);
   });
 
+  it("/manifest.webmanifest é caminho público", () => {
+    expect(isPublicPath("/manifest.webmanifest")).toBe(true);
+  });
+
   it("a entrada é ancorada — não abre /icon-secreto nem /admin/icon", () => {
     // Regex de caminho público sem âncora é como allowlist vira buraco.
     expect(isPublicPath("/iconografia")).toBe(false);
@@ -82,13 +86,9 @@ describe("o ícone carrega para quem NÃO entrou", () => {
     expect(icone).toMatch(/marcaDaSaida\(null\)/);
   });
 
-  it("o layout declara o ícone — é o que mata o pedido a /favicon.ico", () => {
+  it("o layout usa a logo personalizada e preserva /icon como fallback", () => {
     // O 404 de /favicon.ico não é barato: em produção ele devolve a
     // `app/not-found.tsx` inteira (19.435 bytes) para um pedido de ícone.
-    //
-    // `marca.logoUrl || "/icon"`: quem subiu um logo próprio usa a URL dele
-    // (o NAVEGADOR busca, sem SSRF do servidor); quem não subiu cai no
-    // gerador dinâmico — o `/icon` continua sendo o piso, nunca some.
     const layout = fs.readFileSync(path.join(RAIZ, "app/layout.tsx"), "utf8");
     expect(layout).toMatch(/icons:\s*\{\s*icon:\s*marca\.logoUrl\s*\|\|\s*"\/icon"\s*\}/);
   });

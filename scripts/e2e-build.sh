@@ -22,6 +22,24 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# ═══ O INSTRUMENTO, ANTES DO TRABALHO ═══
+#
+# Mesma classe de `scripts/test-db.sh` (issue #1351): o binário que faz o
+# trabalho pode não estar instalado, e o script só descobre isso no instante da
+# chamada — DEPOIS de já ter anunciado `==> Buildando contra ...` —, com o erro
+# genérico do `pnpm` no lugar de uma frase que diga qual binário falta.
+#
+# A guarda olha o ARQUIVO, não o PATH: medido, `pnpm exec` resolve
+# `node_modules/.bin` sozinho (sai 0 mesmo com `node_modules/.bin` fora do
+# PATH), então um `command -v next` recusaria uma chamada que funcionaria.
+# Não instala nada nem mexe no PATH: RECUSA, nomeando o binário ausente.
+if [ ! -x node_modules/.bin/next ]; then
+  echo "ERRO: \`next\` não está instalado (falta node_modules/.bin/next) — o build do E2E não rodaria." >&2
+  echo "      Rode \`pnpm install\` e chame este script de novo." >&2
+  echo "      Você chamou: $0 $*" >&2
+  exit 1
+fi
+
 if [ ! -f .env.e2e ]; then
   echo "==> .env.e2e não existe. Rode 'pnpm e2e:env' (precisa do Supabase local de pé)." >&2
   exit 1
@@ -34,7 +52,12 @@ set -a
 set +a
 
 echo "==> Buildando contra ${NEXT_PUBLIC_SUPABASE_URL}"
-pnpm exec next build
+# O Turbopack do Next 16.3.5 falha no runner Linux ao resolver `next/font/google`
+# ("@vercel/turbopack-next/internal/font/google/font"). O E2E precisa validar a
+# aplicação, não esse resolver experimental; Webpack produz o mesmo bundle sem o
+# defeito de infraestrutura.
+# Webpack passa do heap padrão de 4 GB neste projeto no runner Linux.
+NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=6144" pnpm exec next build --webpack
 
 # A PROVA, e não a suposição: se a URL de produção sobreviveu em qualquer
 # artefato do bundle, o `.env.local` venceu e o teste falaria com a nuvem pela
@@ -44,7 +67,7 @@ pnpm exec next build
 # O host vem do PRÓPRIO .env.local, então a guarda continua valendo se alguém
 # apontar aquele arquivo para outro projeto.
 if [ -f .env.local ]; then
-  HOST_PROD="$(grep -E '^NEXT_PUBLIC_SUPABASE_URL=' .env.local | cut -d= -f2- | sed -E 's#https?://##; s#/.*##')"
+  HOST_PROD="$(grep -E '^NEXT_PUBLIC_SUPABASE_URL=' .env.local | cut -d= -f2- | sed -E 's#https?://##; s#/.*##' || true)"
   if [ -n "$HOST_PROD" ] && [ "$HOST_PROD" != "127.0.0.1:54321" ]; then
     if grep -rqF "$HOST_PROD" .next/static 2>/dev/null; then
       echo "==> FALHOU: o bundle do browser contém o host de produção ($HOST_PROD)." >&2
@@ -57,8 +80,12 @@ fi
 
 # Controle POSITIVO do mesmo grep: se a URL local também não aparecesse, o
 # "não achei produção" acima não valeria nada — seria um grep que não acha nada.
+# Com Webpack, o valor pode ficar no artefato do servidor em vez de
+# `.next/static`; a busca positiva cobre a saída inteira. A negativa acima
+# continua limitada ao bundle do browser, que é onde uma URL de produção seria
+# perigosa.
 HOST_LOCAL="$(printf '%s' "$NEXT_PUBLIC_SUPABASE_URL" | sed -E 's#https?://##; s#/.*##')"
-if grep -rqF "$HOST_LOCAL" .next/static 2>/dev/null; then
+if grep -rqF "$HOST_LOCAL" .next 2>/dev/null; then
   echo "==> OK (controle): o host local ($HOST_LOCAL) ESTÁ no bundle — o grep está vivo."
 else
   echo "==> FALHOU (controle): o host local não aparece no bundle." >&2

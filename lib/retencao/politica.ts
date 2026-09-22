@@ -14,13 +14,21 @@
  *
  * ─── O piso não é sugestão ──────────────────────────────────────────────────
  *
- * Este módulo devolve o número que o CHAMADOR pede ao banco; o piso de verdade
- * mora dentro de `fn_podar_fila_de_jobs` e `fn_expurgar_auditoria_vencida`
- * (`greatest(..., piso)`), porque só lá ele vale para QUALQUER chamador —
- * inclusive um `psql` na mão. Repeti-lo aqui serve para outra coisa: para o
- * operador ver no log que o valor dele foi elevado, em vez de descobrir pela
- * ausência de efeito. Os dois lados usam as mesmas constantes deste arquivo, e
- * `tests/invariants/retencao-poda-e-expurgo.test.ts` compara os dois.
+ * Este módulo devolve o número que o CHAMADOR pede ao banco; para a FILA e a
+ * AUDITORIA o piso de verdade mora dentro de `fn_podar_fila_de_jobs` e
+ * `fn_expurgar_auditoria_vencida` (`greatest(..., piso)`), porque só lá ele vale
+ * para QUALQUER chamador — inclusive um `psql` na mão. Repeti-lo aqui serve para
+ * outra coisa: para o operador ver no log que o valor dele foi elevado, em vez
+ * de descobrir pela ausência de efeito. Os dois lados usam as mesmas constantes
+ * deste arquivo, e `tests/invariants/retencao-poda-e-expurgo.test.ts` compara os
+ * dois.
+ *
+ * ⚠️ A CAPTAÇÃO É A EXCEÇÃO, e por isso o aviso NÃO diz mais "o piso também é
+ * aplicado dentro da função do banco": para `webhook_lead_captures` isso seria
+ * FALSO. A poda dela é um DELETE do admin client (`lib/webhooks/retencao-da-
+ * captacao.ts`), não uma `security definer` — não há função onde enfiar o piso,
+ * e o alcance dele termina no TypeScript. Uma frase que promete uma proteção
+ * inexistente é pior que a ausência da frase: ela faz quem lê parar de checar.
  */
 
 /** 90 dias. Longe o bastante do horizonte em que "1º outbound" ainda diz algo. */
@@ -31,6 +39,131 @@ export const RETENCAO_FILA_DIAS_PISO = 7;
 export const RETENCAO_AUDITORIA_DIAS_PADRAO = 1825;
 /** Piso da auditoria: o knob nunca vira apagador de rastro recente. */
 export const RETENCAO_AUDITORIA_DIAS_PISO = 90;
+/**
+ * 365 dias para o HISTÓRICO de leads captados (`webhook_lead_captures`).
+ *
+ * Muito mais longo que a fila e mais curto que a auditoria, e as duas pontas
+ * têm razão: a linha não é despejo de depuração (é o que a aba "Leads
+ * recebidos" mostra, e a pergunta útil — "de qual campanha veio quem fechou?" —
+ * é de meses atrás), mas também não é rastro legal de 5 anos. Um ano fiscal
+ * inteiro, a ~1 kB por formulário: 300 leads/dia dão ~110 MB.
+ */
+/**
+ * Quantos dias de PASSADO o espelho da agenda conectada guarda.
+ *
+ * `calendar_external_events` é cache do que o Google já tem: reconstruível pelo
+ * sync, apagado em cascata quando a conexão sai. Sem prazo, "espelho" vira só um
+ * nome mais simpático para um arquivo permanente de compromissos de terceiros —
+ * guardado por um produto que declarou não ser o controlador daquele dado.
+ *
+ * O corte é por `ends_at`, nunca por `created_at`: compromisso futuro não
+ * envelhece, e apagá-lo faria a agenda marcar em cima de hora ocupada.
+ */
+export const RETENCAO_ESPELHO_AGENDA_DIAS_PADRAO = 90;
+
+/**
+ * Piso BAIXO de propósito, ao contrário do da auditoria.
+ *
+ * 90 dias de piso existem lá para o knob não virar apagador de rastro depois de
+ * um incidente. Aqui é cache: quem quiser mais passado pede ao sync, que repõe.
+ * Piso alto não protegeria ninguém — só guardaria mais tempo dado de terceiro.
+ */
+export const RETENCAO_ESPELHO_AGENDA_DIAS_PISO = 7;
+
+export const RETENCAO_CAPTACAO_DIAS_PADRAO = 365;
+/**
+ * Piso da captação: o knob nunca vira apagador de ORIGEM.
+ *
+ * A tabela guarda de onde o contato veio — a página, o IP, a campanha, o
+ * consentimento implícito de ter preenchido. Trinta dias é o mínimo em que essa
+ * pergunta ainda tem chance de ser feita.
+ *
+ * ⚠️ DIFERENÇA DECLARADA em relação aos dois pisos acima: aqueles moram DENTRO
+ * de uma função do banco (`greatest(..., piso)`), o que os faz valer até para
+ * um `psql` na mão. Este mora no TypeScript que apaga
+ * (`lib/webhooks/retencao-da-captacao.ts`), porque a poda da captação é um
+ * DELETE do admin client, não uma `security definer` — não há função onde
+ * enfiá-lo. O alcance é menor e está escrito aqui em vez de presumido.
+ */
+export const RETENCAO_CAPTACAO_DIAS_PISO = 30;
+
+/**
+ * 365 dias para a CONVERSA DO CASO (`agent_case_chat_messages`, migration 0281).
+ *
+ * Um ano fiscal de deliberação. Depois disso, "por que decidimos assim" é
+ * respondido pelos EVENTOS do caso — que são o registro da decisão —, não pela
+ * conversa que a precedeu. Guardar a deliberação para sempre seria manter
+ * indefinidamente texto sobre uma pessoa identificável cuja utilidade acabou.
+ */
+export const RETENCAO_CONVERSA_DO_CASO_DIAS_PADRAO = 365;
+/**
+ * Piso da conversa do caso: 90 dias, o MESMO da auditoria e pela mesma razão.
+ *
+ * O knob nunca vira apagador de deliberação recente — a pergunta "quem decidiu
+ * o quê, e com base em quê" ainda se faz três meses depois. O piso mora DENTRO
+ * de `fn_expurgar_conversa_do_caso_vencida` (`greatest(...)` no corpo), o que o
+ * faz valer para qualquer chamador, inclusive um `psql` na mão; a cópia aqui
+ * serve para o operador ver no log que o valor dele foi elevado, em vez de
+ * descobrir pela ausência de efeito.
+ */
+export const RETENCAO_CONVERSA_DO_CASO_DIAS_PISO = 90;
+
+/**
+ * 1825 dias (5 anos) para a PASSAGEM para uma pessoa
+ * (`passagens_de_atendimento`, migration 0291).
+ *
+ * O mesmo horizonte da auditoria, e pela mesma razão: a passagem é rastro de
+ * ATENDIMENTO — quem assumiu a conversa de quem, quando, por quê e quanto tempo
+ * a pessoa esperou. É a linha que responde a uma reclamação de dois anos atrás,
+ * e é de onde sai a medida de repetição que diz se o briefing serviu para
+ * alguma coisa.
+ */
+export const RETENCAO_PASSAGEM_DIAS_PADRAO = 1825;
+/**
+ * Piso da passagem: 90 dias, o mesmo da auditoria.
+ *
+ * O knob nunca vira apagador de rastro recente. O piso mora DENTRO de
+ * `fn_expurgar_passagens_vencidas` (`greatest(...)` no corpo), o que o faz valer
+ * para qualquer chamador, inclusive um `psql` na mão; a cópia aqui serve para o
+ * operador ver no log que o valor dele foi elevado, em vez de descobrir pela
+ * ausência de efeito.
+ *
+ * ⚠️ O piso NÃO é a única proteção desta tabela, e a outra é mais forte: a
+ * função só apaga linha com `reconhecido_em is not null`. Passagem aberta é
+ * demanda viva — alguém do outro lado está esperando e ninguém assumiu — e
+ * apagá-la por idade seria o expurgo virando esquecedor de pendência.
+ */
+export const RETENCAO_PASSAGEM_DIAS_PISO = 90;
+
+/**
+ * 180 dias para o REGISTRO DE ENTREGA do aviso de caso
+ * (`entregas_de_aviso_de_caso`, migration 0292).
+ *
+ * Bem mais curto que a passagem e que a auditoria, e o motivo é a pergunta: a
+ * única que esta tabela responde — "o aviso daquele caso saiu?" — é de semanas,
+ * não de anos. Depois de seis meses o caso já foi resolvido ou abandonado, e o
+ * que sobrou dele está nos EVENTOS do caso, que são o registro da decisão.
+ *
+ * A linha não guarda texto nenhum (só `corpo_hash`), então o que se poda aqui é
+ * volume de operação, não relato de pessoa.
+ */
+export const RETENCAO_AVISO_DE_CASO_DIAS_PADRAO = 180;
+/**
+ * Piso do aviso: 30 dias — o mais baixo dos pisos com dono no SQL, e de
+ * propósito.
+ *
+ * Os 90 dias da auditoria existem para o knob não virar apagador de RASTRO
+ * LEGAL. Aqui o rastro é operacional, e o que o piso protege é outra coisa: o
+ * incidente que ainda está sendo apurado. "Por que a equipe não foi avisada na
+ * semana passada?" é uma pergunta de dias, não de trimestres — e um mês é o
+ * mínimo em que ela ainda tem chance de ser feita.
+ *
+ * O piso mora DENTRO de `fn_expurgar_avisos_de_caso_vencidos`
+ * (`greatest(...)` no corpo), o que o faz valer para qualquer chamador,
+ * inclusive um `psql` na mão; a cópia aqui serve para o operador ver no log que
+ * o valor dele foi elevado, em vez de descobrir pela ausência de efeito.
+ */
+export const RETENCAO_AVISO_DE_CASO_DIAS_PISO = 30;
 
 export interface RetencaoInterpretada {
   /** Dias a pedir ao banco. Nunca abaixo do piso, nunca `NaN`. */
@@ -76,7 +209,7 @@ export function interpretarRetencao(
       dias: opcoes.piso,
       aviso:
         `${opcoes.chave}=${numero} está abaixo do piso de ${opcoes.piso} dias — ` +
-        `usando ${opcoes.piso}. O piso também é aplicado dentro da função do banco.`,
+        `usando ${opcoes.piso}.`,
     };
   }
 

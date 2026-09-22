@@ -14,12 +14,29 @@ const ORG = "00000000-0000-4000-8000-000000000236";
 const WAHA_BASE = 'http://localhost:3030';
 
 /** Sobe o WAHA "configurado" e devolve o fetch espionado. */
-function stubWaha(response: unknown) {
+function stubWaha(
+  response: unknown,
+  checkExists?: (phone: string) => { numberExists: boolean; pn?: string; chatId?: string },
+) {
   vi.stubEnv('WAHA_API_BASE_URL', WAHA_BASE);
   vi.stubEnv('WAHA_API_KEY', 'hash123');
-  const fetchMock = vi.fn().mockResolvedValue(Response.json(response));
+  const fetchMock = vi.fn().mockImplementation((url: string) => {
+    const href = String(url);
+    if (href.includes('/api/contacts/check-exists')) {
+      const phone = new URL(href).searchParams.get('phone') ?? '';
+      const body = checkExists?.(phone) ?? { numberExists: true, chatId: `${phone}@c.us` };
+      return Promise.resolve(Response.json(body));
+    }
+    return Promise.resolve(Response.json(response));
+  });
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
+}
+
+function sendTextBody(fetchMock: ReturnType<typeof vi.fn>) {
+  const call = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/sendText'));
+  expect(call, 'sendText não foi chamado').toBeTruthy();
+  return JSON.parse(String((call![1] as RequestInit).body)) as Record<string, unknown>;
 }
 
 afterEach(() => {
@@ -116,14 +133,47 @@ describe('adapter WAHA', () => {
     });
 
     expect(res).toEqual({ externalId: 'ABC123' });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe(`${WAHA_BASE}/api/sendText`);
-    expect(JSON.parse(String(init.body))).toEqual({
+    expect(sendTextBody(fetchMock)).toEqual({
       session: 'default',
       chatId: '5531999998888@c.us',
       text: 'oi',
     });
+  });
+
+  it('envia pelo chatId sem o nono quando o WhatsApp não reconhece o 13 dígitos', async () => {
+    const fetchMock = stubWaha({ id: { _serialized: 'ABC123' } }, (phone) =>
+      phone === '553198966398'
+        ? { numberExists: true, pn: '553198966398@c.us' }
+        : { numberExists: false },
+    );
+
+    await getAdapter('waha').send({
+      organizationId: ORG,
+      sessionRef: 'default',
+      to: '5531998966398@c.us',
+      kind: 'text',
+      body: 'oi',
+    });
+
+    expect(sendTextBody(fetchMock).chatId).toBe('553198966398@c.us');
+  });
+
+  it('lead só com telefone: envia ao @lid que o check-exists devolveu', async () => {
+    const fetchMock = stubWaha({ id: { _serialized: 'ABC123' } }, () => ({
+      numberExists: true,
+      chatId: '23423462304912@lid',
+      pn: '5532984793302@c.us',
+    }));
+
+    await getAdapter('waha').send({
+      organizationId: ORG,
+      sessionRef: 'default',
+      to: '5532984793302@c.us',
+      kind: 'text',
+      body: 'oi',
+    });
+
+    expect(sendTextBody(fetchMock).chatId).toBe('23423462304912@lid');
   });
 
   it('áudio vai pelo plano de mídia do WAHA (sendVoice), não por sendText', async () => {
@@ -138,9 +188,9 @@ describe('adapter WAHA', () => {
     });
 
     expect(res).toEqual({ externalId: 'VOICE1' });
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe(`${WAHA_BASE}/api/sendVoice`);
-    expect(JSON.parse(String(init.body))).toEqual({
+    const call = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/sendVoice'));
+    expect(call).toBeTruthy();
+    expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({
       session: 'default',
       chatId: '5531999998888@c.us',
       file: { url: 'https://x/a.ogg', mimetype: 'audio/ogg' },

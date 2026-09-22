@@ -170,7 +170,8 @@ Só depois: `gastoCents >= tetoCents` → `bloquear`. Entre `teto*limiar/100` e 
 Isto existe porque `lib/env.ts:204-224` faz `safeParse` e **lança** quando o schema recusa
 (`:222`). Um `z.enum` para o kill switch transformaria a alavanca de emergência em um
 derrubador do app inteiro no dia em que o operador escrevesse `false` — o idioma dos
-vizinhos `AGENT_DISPATCH_CONSUMER` (`:104`) e `EVENT_LOG_WORKER_ENABLED` (`:107`). O
+vizinho `AGENT_DISPATCH_CONSUMER` (`:104`). (O outro exemplo citado aqui era
+`EVENT_LOG_WORKER_ENABLED`, removido em 2026-08-25 por nunca ter tido leitor.) O
 precedente correto no mesmo arquivo é `APP_ACCENT_HEX: z.string().optional().default("")`
 (`:201`): string crua no env, normalização no código. E aceitar as grafias falsas comuns
 como `off` é dar ao operador de VPS às 2h da manhã o que ele quis dizer.
@@ -1178,8 +1179,8 @@ aplica.
    `scripts/smoke-llm.ts:168`, um smoke de dev, o que **sugere** zero; sugerir não é medir, e
    o campo é jsonb livre, editável por qualquer acesso privilegiado ao banco.
    `select count(*) from organizations where jsonb_typeof(settings->'llm'->'monthly_budget_cents') = 'number'`
-   responde em um segundo. Há **dois** ambientes de produção com bancos diferentes (Vercel e
-   VPS) e a resposta pode divergir entre eles.
+   responde em um segundo. Rode-o contra o banco da instalação em VPS — o produto é self-host,
+   e é lá que ele opera.
 2. Quantas têm `monthly_limit_cents <> 5000` — dimensiona quantas pessoas vão ler "você
    definiu X, mas nunca foi aplicado".
 3. Quantas orgs estão no recorte que alcança o guard de `ai-response-worker.ts:408-413`

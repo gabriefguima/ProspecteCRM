@@ -1,18 +1,16 @@
 import { describe, it, expect } from 'vitest';
+import type { BranchableNode } from './graph-schema';
 import {
   NODE_TYPES,
-  NodeType,
   waitConfigSchema,
   aiClassifyConfigSchema,
+  matchReplyConfigSchema,
   actionConfigSchema,
   conditionConfigSchema,
   endConfigSchema,
   flowNodeSchema,
   flowEdgeSchema,
   flowGraphSchema,
-  FlowGraph,
-  FlowNode,
-  FlowEdge,
   FALLBACK_BRANCH_ID,
   NO_REPLY_BRANCH_ID,
   CONDITION_TRUE_BRANCH_ID,
@@ -22,6 +20,7 @@ import {
   branchIdForCondition,
   conditionForBranch,
 } from './graph-schema';
+import type { NodeType, FlowGraph, FlowNode, FlowEdge } from './graph-schema';
 import { toReactFlow, fromReactFlow } from './graph-mappers';
 
 describe('graph-schema', () => {
@@ -32,6 +31,8 @@ describe('graph-schema', () => {
         'wait',
         'condition',
         'ai_classify',
+        'match_reply',
+        'repeat',
         'action',
         'end',
       ]);
@@ -246,6 +247,21 @@ describe('graph-schema', () => {
   });
 
   describe('actionConfigSchema', () => {
+    describe('text mode', () => {
+      it('accepts a fixed body', () => {
+        const result = actionConfigSchema.safeParse({
+          mode: 'text',
+          body: 'Olá, qual é o seu nome?',
+        });
+        expect(result.success).toBe(true);
+      });
+
+      it('rejects empty body', () => {
+        const result = actionConfigSchema.safeParse({ mode: 'text', body: '' });
+        expect(result.success).toBe(false);
+      });
+    });
+
     describe('ai_message mode', () => {
       it('accepts valid ai_message config', () => {
         const result = actionConfigSchema.safeParse({
@@ -607,6 +623,59 @@ describe('graph-schema', () => {
       expect(result.success).toBe(true);
     });
 
+    it('accepts match_reply with save_to and if_exists', () => {
+      const result = matchReplyConfigSchema.safeParse({
+        branches: [{ id: 'br_sim', label: 'Sim', op: 'contains', pattern: 'sim' }],
+        grace_timeout_ms: 900_000,
+        save_to: { kind: 'lead_custom', key: 'endereco' },
+        if_exists: 'confirm',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('accepts match_reply node', () => {
+      const result = flowNodeSchema.safeParse({
+        id: 'mr-1',
+        type: 'match_reply',
+        label: 'Casar texto',
+        position: { x: 300, y: 300 },
+        config: {
+          branches: [{ id: 'br_sim', label: 'Sim', op: 'contains', pattern: 'sim' }],
+          grace_timeout_ms: 900_000,
+        },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects match_reply with grace below 15min', () => {
+      const result = flowNodeSchema.safeParse({
+        id: 'mr-1',
+        type: 'match_reply',
+        label: 'Casar texto',
+        position: { x: 0, y: 0 },
+        config: {
+          branches: [{ id: 'br_sim', label: 'Sim', op: 'eq', pattern: 'ok' }],
+          grace_timeout_ms: 899_999,
+        },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects match_reply reserved branch id and unknown op', () => {
+      expect(
+        matchReplyConfigSchema.safeParse({
+          branches: [{ id: 'no_reply', label: 'X', op: 'contains', pattern: 'x' }],
+          grace_timeout_ms: 900_000,
+        }).success,
+      ).toBe(false);
+      expect(
+        matchReplyConfigSchema.safeParse({
+          branches: [{ id: 'br_a', label: 'A', op: 'regex', pattern: 'x' }],
+          grace_timeout_ms: 900_000,
+        }).success,
+      ).toBe(false);
+    });
+
     it('accepts action node', () => {
       const result = flowNodeSchema.safeParse({
         id: 'action-1',
@@ -863,6 +932,93 @@ describe('graph-schema', () => {
       });
       expect(result.success).toBe(false);
     });
+
+    /**
+     * Integridade ENTRE nós e arestas (#699). Cada peça passava no schema
+     * sozinha — quem montava o grafo (o canvas, ao excluir um nó) produzia
+     * aresta órfã e ids repetidos que só quebravam longe do defeito. Aqui o
+     * contrato é de fora: rejeitar com o id a corrigir na mensagem.
+     */
+    describe('integridade: aresta órfã e ids repetidos (#699)', () => {
+      const noTrigger = (id: string) => ({
+        id,
+        type: 'trigger' as const,
+        label: 'Start',
+        position: { x: 0, y: 0 },
+        config: {},
+      });
+      const noEnd = (id: string) => ({
+        id,
+        type: 'end' as const,
+        label: 'End',
+        position: { x: 100, y: 100 },
+        config: { outcome: 'converted' as const },
+      });
+      const aresta = (id: string, source: string, target: string) => ({
+        id,
+        source,
+        target,
+        condition: { type: 'always' as const },
+      });
+
+      /** [] quando o grafo passou — a asserção de mensagem falha em vez de pular. */
+      function mensagensDe(resultado: ReturnType<typeof flowGraphSchema.safeParse>): string[] {
+        return resultado.success ? [] : resultado.error.issues.map((i) => i.message);
+      }
+
+      it('aceita grafo íntegro com aresta ligando dois nós existentes (controle)', () => {
+        const result = flowGraphSchema.safeParse({
+          nodes: [noTrigger('no-1'), noEnd('no-2')],
+          edges: [aresta('e-1', 'no-1', 'no-2')],
+        });
+        expect(result.success).toBe(true);
+      });
+
+      it('rejeita aresta cujo source aponta para nó inexistente', () => {
+        const result = flowGraphSchema.safeParse({
+          nodes: [noTrigger('no-1'), noEnd('no-2')],
+          edges: [aresta('e-3', 'no-9', 'no-2')],
+        });
+        expect(result.success).toBe(false);
+        expect(mensagensDe(result)).toContain('aresta "e-3" aponta para nó inexistente: "no-9"');
+      });
+
+      it('rejeita aresta cujo target aponta para nó inexistente', () => {
+        const result = flowGraphSchema.safeParse({
+          nodes: [noTrigger('no-1'), noEnd('no-2')],
+          edges: [aresta('e-3', 'no-1', 'no-9')],
+        });
+        expect(result.success).toBe(false);
+        expect(mensagensDe(result)).toContain('aresta "e-3" aponta para nó inexistente: "no-9"');
+      });
+
+      it('rejeita dois nós com o mesmo id', () => {
+        const result = flowGraphSchema.safeParse({
+          nodes: [noTrigger('no-1'), noTrigger('no-1'), noEnd('no-2')],
+          edges: [aresta('e-1', 'no-1', 'no-2')],
+        });
+        expect(result.success).toBe(false);
+        expect(mensagensDe(result)).toContain('id de nó repetido: "no-1"');
+      });
+
+      it('rejeita duas arestas com o mesmo id', () => {
+        const result = flowGraphSchema.safeParse({
+          nodes: [noTrigger('no-1'), noEnd('no-2')],
+          edges: [aresta('e-2', 'no-1', 'no-2'), aresta('e-2', 'no-1', 'no-2')],
+        });
+        expect(result.success).toBe(false);
+        expect(mensagensDe(result)).toContain('id de aresta repetido: "e-2"');
+      });
+
+      it('CONTROLE: campo desconhecido continua rejeitado', () => {
+        const result = flowGraphSchema.safeParse({
+          nodes: [noTrigger('no-1'), noEnd('no-2')],
+          edges: [aresta('e-1', 'no-1', 'no-2')],
+          campo_desconhecido: true,
+        });
+        expect(result.success).toBe(false);
+      });
+    });
   });
 
   describe('type inference', () => {
@@ -1012,7 +1168,7 @@ describe('graph-schema', () => {
           kind: 'match',
           condition: { type: 'class_match', value: 'no_reply' },
         },
-        { id: FALLBACK_BRANCH_ID, label: 'Sempre', check: null, kind: 'fallback', condition: { type: 'always' } },
+        { id: FALLBACK_BRANCH_ID, label: 'Outros casos', check: null, kind: 'fallback', condition: { type: 'always' } },
       ]);
     });
 
@@ -1033,7 +1189,7 @@ describe('graph-schema', () => {
           kind: 'match',
           condition: { type: 'cond_result', value: false },
         },
-        { id: FALLBACK_BRANCH_ID, label: 'Sempre', check: null, kind: 'fallback', condition: { type: 'always' } },
+        { id: FALLBACK_BRANCH_ID, label: 'Outros casos', check: null, kind: 'fallback', condition: { type: 'always' } },
       ]);
     });
 
@@ -1045,6 +1201,38 @@ describe('graph-schema', () => {
         expect(branchId, `edge ${edge.id} lost its branch`).not.toBeNull();
         expect(conditionForBranch(byId.get(edge.source)!, branchId!)).toStrictEqual(edge.condition);
       }
+    });
+
+    it('a saída de escape se chama "Outros casos" em TODO nó que tem outras saídas', () => {
+      // "Sempre" ali afirmava que o lead sai por essa aresta além das outras. O
+      // motor só a usa quando nenhuma outra serve (`selectEdge`), e nunca manda
+      // por duas. Em nó de saída única "Sempre" continua verdade — é o caso de
+      // baixo. No modo uma-saída-por-regra o nome é "Nenhuma delas".
+      const ramificados: BranchableNode[] = [
+        { type: 'condition', config: { combinator: 'and', checks: [{ field: 'tag', op: 'eq', value: 'vip' }] } },
+        { type: 'ai_classify', config: { classes: ['Interessado'], grace_timeout_ms: 900_000, target: 'last_reply' } },
+        {
+          type: 'match_reply',
+          config: { branches: [{ id: 'br_sim', label: 'Sim', op: 'eq', pattern: 'sim' }], grace_timeout_ms: 900_000 },
+        },
+        { type: 'repeat', config: { max_count: 12 } },
+      ];
+      for (const node of ramificados) {
+        const branches = nodeBranches(node);
+        expect(branches.length, `${node.type} devia ter mais de uma saída`).toBeGreaterThan(1);
+        const escape = branches.find((b) => b.kind === 'fallback')!;
+        expect(escape.label, `escape do ${node.type}`).toBe('Outros casos');
+      }
+
+      const porRegra = nodeBranches({
+        type: 'condition',
+        config: {
+          combinator: 'and',
+          branching: 'per_check',
+          checks: [{ id: 'regra-1', field: 'tag', op: 'eq', value: 'vip' }],
+        },
+      });
+      expect(porRegra.find((b) => b.kind === 'fallback')!.label).toBe('Nenhuma delas');
     });
 
     it('leaves a node with a single output with exactly one branch: the fallback', () => {
@@ -1263,6 +1451,27 @@ describe('graph-schema', () => {
           expect(branches.filter((b) => b.kind === 'fallback')).toHaveLength(1);
           expect(branches.at(-1)!.kind).toBe('fallback');
         }
+      });
+
+      it('match_reply: declared branches + no_reply + always fallback (v2 only)', () => {
+        const node = flowNodeSchema.parse({
+          id: 'mr1',
+          type: 'match_reply',
+          label: 'Texto',
+          position: { x: 0, y: 0 },
+          config: {
+            branches: [
+              { id: 'br_sim', label: 'Sim', op: 'eq', pattern: 'sim' },
+              { id: 'br_nao', label: 'Não', op: 'contains', pattern: 'nao' },
+            ],
+            grace_timeout_ms: 900_000,
+          },
+        });
+        const branches = nodeBranches(node);
+        expect(branches.map((b) => b.id)).toEqual(['br_sim', 'br_nao', NO_REPLY_BRANCH_ID, FALLBACK_BRANCH_ID]);
+        expect(branches[0]!.condition).toEqual({ type: 'branch', branch_id: 'br_sim' });
+        expect(branches[2]!.condition).toEqual({ type: 'branch', branch_id: NO_REPLY_BRANCH_ID });
+        expect(branches.at(-1)!.condition).toEqual({ type: 'always' });
       });
     });
 

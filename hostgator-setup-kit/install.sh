@@ -22,6 +22,7 @@ COMUNIDADE_URL="https://lp-comunidade.automatiklabs.com.br"
 REPO_DIR="${REPO_DIR:-deskcommcrm}"
 COMPOSE="docker-compose.prod.yml"
 COMPOSE_TRAEFIK="docker-compose.traefik.yml"
+COMPOSE_NPM="docker-compose.npm.yml"
 NONINTERACTIVE=0
 [ "${1:-}" = "--yes" ] && NONINTERACTIVE=1
 
@@ -29,18 +30,18 @@ NONINTERACTIVE=0
 # usar o _common.sh). As duas funções abaixo são gêmeas das de lá — se mexer
 # numa, mexa na outra.
 dc() {
-  if [ "${REVERSE_PROXY:-caddy}" = "traefik" ]; then
-    docker compose -f "$COMPOSE" -f "$COMPOSE_TRAEFIK" "$@"
-  else
-    docker compose -f "$COMPOSE" "$@"
-  fi
+  case "${REVERSE_PROXY:-caddy}" in
+  traefik) docker compose -f "$COMPOSE" -f "$COMPOSE_TRAEFIK" "$@" ;;
+  npm)     docker compose -f "$COMPOSE" -f "$COMPOSE_NPM" "$@" ;;
+  *)       docker compose -f "$COMPOSE" "$@" ;;
+  esac
 }
 dc_files() {
-  if [ "${REVERSE_PROXY:-caddy}" = "traefik" ]; then
-    printf -- '-f %s -f %s' "$COMPOSE" "$COMPOSE_TRAEFIK"
-  else
-    printf -- '-f %s' "$COMPOSE"
-  fi
+  case "${REVERSE_PROXY:-caddy}" in
+  traefik) printf -- '-f %s -f %s' "$COMPOSE" "$COMPOSE_TRAEFIK" ;;
+  npm)     printf -- '-f %s -f %s' "$COMPOSE" "$COMPOSE_NPM" ;;
+  *)       printf -- '-f %s' "$COMPOSE" ;;
+  esac
 }
 
 # ── Aparência ───────────────────────────────────────────────────────────────
@@ -201,6 +202,26 @@ v_email() {
 v_hex() {
   case "$1" in ''|'#'[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) return 0;; esac
   echo "Use um código de cor como #7a5cd6 — cerquilha e 6 dígitos —, ou Enter para a cor do sistema"
+  return 1
+}
+
+# O idioma em que o sistema abre para QUEM INSTALA e para quem ele convidar.
+#
+# Vai para `organizations.locale`, e não só para o usuário dono: é a organização
+# que responde pelos convidados que ainda não existem — quem entra sem
+# preferência própria cai no idioma da empresa (a cadeia vive em
+# `lib/auth/server.ts`). Sem isto, uma clínica na Colômbia instalava em espanhol
+# e via o produto inteiro em português na primeira tela, sem nada indicando onde
+# trocar.
+#
+# Aceita o código e o número da opção, porque quem lê "1) Português" digita "1".
+v_locale() {
+  case "$1" in
+    ''|pt-BR|es) return 0;;
+    1) return 0;;
+    2) return 0;;
+  esac
+  echo "Escolha 1 (Português) ou 2 (Español) — ou Enter para Português"
   return 1
 }
 
@@ -487,10 +508,35 @@ envq() { printf '%s="%s"\n' "$1" "$(printf '%s' "${2-}" | sed 's/[\\"$`]/\\&/g')
 # mais difícil, e a última das credenciais — perdia tudo o que já tinha digitado
 # e recomeçava do zero na tentativa seguinte. Justamente quem mais precisa de
 # uma segunda tentativa é quem tem menos paciência para redigitar 11 campos.
-# Mesma permissão do .env (600): o conteúdo é o mesmo, inclusive os segredos.
+# Mesma permissão do .env (600): o conteúdo é quase o mesmo, segredos inclusive
+# — a exceção é o token de CONTA, e o bloco abaixo explica por quê.
 PARTIAL_FILE="${PARTIAL_FILE:-.env.partial}"
+
+# A exceção: segredo de CONTA não entra no rascunho, nem por um instante.
+#
+# O `SUPABASE_ACCESS_TOKEN` abre a Management API, que cria e apaga projetos —
+# por isso ele já não vai para o `.env` (não há `envq` para ele) e o README
+# promete, na tabela de pré-requisitos, que "ele não fica salvo: é usado uma vez
+# e some com o processo". O rascunho desmentia as duas coisas: `ask_one` chama
+# `save_partial` para TODA resposta aceita, então o token ficava em `.env.partial`
+# desde a pergunta até o `rm -f` que só acontece depois de o `.env` ser escrito —
+# e qualquer aborto no meio (Ctrl-C, DNS errado, `die` de validação) o deixava no
+# disco, para a tentativa seguinte recarregar.
+#
+# POR QUE PULAR A VARIÁVEL, e não um `trap` que apague o rascunho em qualquer
+# saída: o trap protegeria este segredo melhor e mataria a única razão de o
+# rascunho existir. Ele existe para a saída ANORMAL — é exatamente aí que o trap
+# dispararia, e quem travou na connection string voltaria a redigitar as 11
+# respostas anteriores. Pular tira do disco o que não pode ficar e deixa intacto
+# o que o rascunho protege.
+#
+# O efeito colateral é deliberado e está dito na tela (ver o aviso junto do
+# "✓ retomando"): ao retomar, o token é perguntado de novo. Para um segredo de
+# conta esse é o comportamento certo, e o campo é opcional — Enter pula.
+RASCUNHO_NAO_GUARDA=" SUPABASE_ACCESS_TOKEN "
 save_partial() {
   local var="$1" val="${!1-}" tmp="${PARTIAL_FILE}.tmp.$$"
+  case "$RASCUNHO_NAO_GUARDA" in *" $var "*) return 0 ;; esac
   umask 077
   { [ -f "$PARTIAL_FILE" ] && grep -vE "^${var}=" "$PARTIAL_FILE" || true; } > "$tmp"
   envq "$var" "$val" >> "$tmp"
@@ -545,12 +591,31 @@ porta_publicavel() {  # porta_publicavel <porta>
 # deixando passar proxy que não fosse Traefik), e nas duas o erro só apareceu
 # rodando de verdade numa VPS.
 # Ecoa: caddy | traefik | bloqueia
-decide_proxy() {  # decide_proxy <portas_ocupadas> <projeto_do_dono> <projeto_atual> <imagem> <nome>
+decide_proxy() {  # decide_proxy <portas_ocupadas> <projeto_do_dono> <projeto_atual> <imagem> <nome> [árvore_do_dono] [árvore_atual]
   local ocupadas="${1:-}" dono_proj="${2:-}" meu_proj="${3:-}" img="${4:-}" nome="${5:-}"
+  local dono_dir="${6:-}" meu_dir="${7:-}"
   [ -z "$ocupadas" ] && { printf 'caddy'; return 0; }
   # As portas estão com ESTA MESMA instalação, já no ar: é a re-execução, que o
   # próprio kit ensina como caminho para corrigir uma resposta.
-  [ -n "$dono_proj" ] && [ "$dono_proj" = "$meu_proj" ] && { printf 'caddy'; return 0; }
+  #
+  # Só que "mesma instalação" NÃO é o mesmo que "mesmo nome de projeto": o nome
+  # é o basename da pasta, e toda cópia do repo se chama DeskcommCRM. Duas
+  # árvores irmãs (/root/DeskcommCRM e /root/apagar7/DeskcommCRM) colidem no
+  # nome `deskcommcrm` e esta linha as declarava re-execução uma da outra —
+  # exatamente o caso que a varredura de portas foi escrita para pegar. Medido
+  # numa VPS de produção em 2026-08-24: a instalação de uma aula passou por
+  # aqui, recriou os contêineres do CRM no ar com o .env dela e trocou o banco
+  # da instalação de produção, sem um aviso. Quem separa as duas é a ÁRVORE.
+  #
+  # Árvore desconhecida (contêiner sem o label, ou criado fora do compose) cai
+  # no comportamento anterior de propósito: não dá para AFIRMAR cópia irmã, e
+  # fechar no escuro quebraria a re-execução legítima que o kit ensina.
+  if [ -n "$dono_proj" ] && [ "$dono_proj" = "$meu_proj" ]; then
+    if [ -n "$dono_dir" ] && [ -n "$meu_dir" ] && [ "$dono_dir" != "$meu_dir" ]; then
+      printf 'bloqueia'; return 0
+    fi
+    printf 'caddy'; return 0
+  fi
   eh_traefik "$img" "$nome" && { printf 'traefik'; return 0; }
   printf 'bloqueia'
 }
@@ -616,6 +681,34 @@ rede_do_traefik() {  # rede_do_traefik <NetworkMode do contêiner> <redes do con
   local netmode="${1:-}" redes="${2:-}" nossa="${3:-}"
   [ "$netmode" = host ] && { printf '%s' "$nossa"; return 0; }
   printf '%s' "$redes" | awk '{print $1}'
+}
+
+# Como o Traefik da hospedagem CHAMA as portas 80 e 443. Os nomes `web` e
+# `websecure` são convenção da documentação, não regra: o EasyPanel batiza os
+# dele de `http` e `https`, e um label apontando para um entrypoint que não
+# existe não gera erro nenhum — o Traefik simplesmente ignora a rota, o domínio
+# cai no 404 do painel e a instalação termina verde com o site mudo. Medido numa
+# VPS com EasyPanel: os 6 contêineres no ar, /api/v1/health saudável por dentro
+# e o domínio devolvendo a página de erro do painel.
+#
+# A configuração do Traefik chega por env (TRAEFIK_ENTRYPOINTS_<NOME>_ADDRESS) ou
+# por flag (--entrypoints.<nome>.address), e a porta pode vir `:80`, `0.0.0.0:80`
+# ou com IP. Nome nenhum encontrado devolve vazio, e quem chama fica com o
+# default de sempre — quem instala hoje atrás de um Traefik com os nomes da
+# documentação não muda de comportamento.
+#
+# Isolada do Docker pelo mesmo motivo de `rede_do_traefik`: para o teste poder
+# exercitar a decisão sem uma VPS.
+entrypoints_do_traefik() {  # entrypoints_do_traefik <env e args do contêiner, um por linha> → "<nome do :80> <nome do :443>"
+  printf '%s\n' "${1:-}" | awk '
+    { l = tolower($0) }
+    l ~ /entrypoints[._][a-z0-9-]+[._]address=/ {
+      nome = l; sub(/[._]address=.*/, "", nome); sub(/.*entrypoints[._]/, "", nome)
+      porta = l; sub(/.*address=/, "", porta); sub(/\/.*/, "", porta); sub(/.*:/, "", porta)
+      if (porta == "80"  && http  == "") http  = nome
+      if (porta == "443" && https == "") https = nome
+    }
+    END { print http " " https }'
 }
 
 # Um Traefik eleito pela varredura de MODO HOST é suspeita, não prova. A eleição
@@ -750,6 +843,35 @@ fi
 PROJECT_DIR="$(pwd)"
 source "$KIT_DIR/_common.sh"
 
+# ── O invariante 8 também vale para quem INSTALA ────────────────────────────
+#
+# `recusar_projeto_de_outra_arvore` já protegia o `update.sh` (:33) e o
+# `agent.sh` (:45), e não protegia este arquivo — a porta por onde o incidente
+# entrou. O painel de cópia irmã, mais abaixo, cobre o caso em que a instalação
+# do ar é a DONA das portas 80/443; este guarda é o que vale sempre, porque
+# pergunta pelos CONTÊINERES do projeto, não pelo proxy:
+#
+#   - VPS com Traefik do painel (Coolify/Hostinger): lá `decide_proxy` sai por
+#     `traefik` antes de comparar árvore, e o painel nunca é alcançado;
+#   - pasta que já concluiu uma instalação: o próprio install.sh grava
+#     REVERSE_PROXY no .env (:1413), e na rodada seguinte o `if [ -z ... ]` que
+#     embrulha o painel é falso — o instalador desligava o próprio guarda;
+#   - portas 80/443 livres: `decide_proxy` devolve `caddy` na primeira linha.
+#
+# Nos três, `docker compose ... up -d` subia sobre o parque da produção com o
+# .env desta pasta (outro banco, outras chaves) — o sintoma medido foi a senha
+# "parar de funcionar" e as conexões de WhatsApp caírem.
+#
+# AQUI e não no preflight: `projeto_pertence_a_outra_arvore` compara contra
+# `PROJECT_DIR`, que só existe a partir da linha acima. E antes da coleta de
+# config, para não pedir dado nenhum a quem vai ser recusado.
+#
+# Instalação NOVA não é afetada: sem contêiner do projeto no ar, a função
+# devolve vazio e o guarda deixa passar. Re-executar na MESMA pasta idem — a
+# árvore é a mesma. `DESKCOMM_ASSUMIR_PROJETO=1` é a saída para quem move a
+# instalação de lugar de propósito, e é a mesma dos outros dois call sites.
+recusar_projeto_de_outra_arvore || die "Instalação interrompida para não derrubar o CRM que já está no ar nesta VPS."
+
 # ── 3. Coleta de config ─────────────────────────────────────────────────────
 fase 2 "Suas informações"
 step "Configuração"
@@ -761,6 +883,9 @@ if [ -f "$PARTIAL_FILE" ]; then
   load_env "$PARTIAL_FILE"
   c_grn "✓ retomando: $(grep -c '=' "$PARTIAL_FILE" 2>/dev/null || echo 0) resposta(s) guardadas da tentativa anterior"
   c_dim "  (para responder tudo de novo do zero: rm $PARTIAL_FILE)"
+  # Sem esta linha, ser perguntado de novo sobre o token — depois de uma tela
+  # dizendo que N respostas foram guardadas — lê como defeito do instalador.
+  c_dim "  (o token do Supabase é de conta e nunca entra no rascunho: ele é perguntado de novo. Enter pula)"
 fi
 
 # ── Proxy reverso: quem está com as portas 80 e 443? ────────────────────────
@@ -791,13 +916,18 @@ porta_publicavel 443 || { portas_ocupadas="${portas_ocupadas:+$portas_ocupadas e
 # O "|| true" não é decorativo: numa atribuição o status do pipeline vira o
 # status do script, e sob `set -e` + `pipefail` um docker ps que falhe (ou um
 # SIGPIPE do consumidor) mataria o instalador mudo, no meio da fase 2.
-dono_portas=""; dono_projeto=""; dono_imagem=""
+dono_portas=""; dono_projeto=""; dono_imagem=""; dono_arvore=""
 if [ -n "$portas_ocupadas" ]; then
   _dono="$(docker ps --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Image}}|{{.Ports}}' 2>/dev/null | dono_das_portas || true)"
   if [ -n "$_dono" ]; then
     dono_portas="${_dono%%|*}"; _resto="${_dono#*|}"
     dono_projeto="${_resto%%|*}"; dono_imagem="${_resto#*|}"
     unset _resto
+    # De qual cópia do repo saiu esse contêiner. É o que separa "sou eu rodando
+    # de novo" de "é a instalação irmã que está no ar" quando as duas pastas se
+    # chamam DeskcommCRM e por isso compartilham o nome do projeto.
+    dono_arvore="$(docker inspect "$dono_portas" --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)"
+    dono_arvore="${dono_arvore%/}"
   fi
   unset _dono
 fi
@@ -832,7 +962,8 @@ if [ -z "${REVERSE_PROXY:-}" ]; then
   # A exclusão da própria instalação acontece AQUI, não na varredura: o teste de
   # bind não tem como se auto-excluir, então filtrar o nosso contêiner antes só
   # produzia um "ocupado por ninguém" — bloqueio sem um comando sequer.
-  case "$(decide_proxy "$portas_ocupadas" "$dono_projeto" "$proj_atual" "$dono_imagem" "$dono_portas")" in
+  _minha_arvore="${PROJECT_DIR:-$PWD}"; _minha_arvore="${_minha_arvore%/}"
+  case "$(decide_proxy "$portas_ocupadas" "$dono_projeto" "$proj_atual" "$dono_imagem" "$dono_portas" "$dono_arvore" "$_minha_arvore")" in
   caddy)
     REVERSE_PROXY=caddy
     [ -n "$portas_ocupadas" ] && c_dim "  (as portas 80/443 já estão com esta instalação — seguindo)"
@@ -879,6 +1010,24 @@ e, se for mesmo um Traefik, ponha REVERSE_PROXY=traefik no .env e rode de novo."
     # for conhecida — "(imagem )" vazio era o sintoma de um campo perdido.
     ocupante="${dono_portas:+pelo contêiner '${dono_portas}'${dono_imagem:+ (imagem ${dono_imagem})}}"
     ocupante="${ocupante:-por um programa do próprio servidor}"
+    # Cópia irmã tem um diagnóstico próprio: o painel genérico abaixo fala de
+    # "porta ocupada", e quem lê isso numa pasta recém-clonada não liga o aviso
+    # à instalação que está no ar — foi assim que uma aula subiu por cima de uma
+    # produção. Aqui o nome das DUAS pastas aparece.
+    if [ -n "$dono_arvore" ] && [ "$dono_projeto" = "$proj_atual" ] && [ "$dono_arvore" != "$_minha_arvore" ]; then
+      c_red "✖ Já existe um DeskcommCRM NO AR nesta VPS, instalado em ${dono_arvore}."
+      printf '\n%s\n'   "  Esta pasta (${_minha_arvore}) é outra cópia do repo. As duas se chamam"
+      printf '%s\n'     "  DeskcommCRM, então o Docker dá às duas o MESMO nome de projeto"
+      printf '%s\n\n'   "  ('${proj_atual}') — e instalar aqui recriaria os contêineres daquela."
+      printf '%s\n'     "  Na prática: o CRM que está no ar passaria a rodar com o .env DESTA pasta"
+      printf '%s\n\n'   "  (outro banco, outras chaves), e as conexões de WhatsApp cairiam."
+      printf '%s\n'     "  Quer atualizar o que já existe? Use aquela pasta:"
+      printf '%s\n\n'   "       cd ${dono_arvore} && bash hostgator-setup-kit/update.sh"
+      printf '%s\n'     "  Quer mesmo uma SEGUNDA instalação nesta VPS? Ela precisa de nome de"
+      printf '%s\n'     "  projeto e domínio próprios — ponha no .env desta pasta, antes de rodar:"
+      printf '%s\n\n'   "       COMPOSE_PROJECT_NAME=deskcomm-$(basename "${_minha_arvore}" | tr 'A-Z' 'a-z')-2"
+      die "Instalação interrompida para não derrubar o DeskcommCRM que está no ar em ${dono_arvore}."
+    fi
     # Concordância com o número de portas: "A porta 80 e 443 já está ocupada"
     # saiu na prova real e denuncia texto montado sem olhar o próprio dado.
     if [ "$n_ocupadas" -gt 1 ]; then
@@ -1013,10 +1162,19 @@ escolher_provedor
 
 # O campo da chave do provedor ESCOLHIDO — e só dele. Pedir as três faria a
 # pessoa achar que precisa das três.
+#
+# O campo é `opcional` (issue #670). `docs/deploy-selfhost` promete que dá para
+# "deixar vazio e cadastrar a chave depois", e o runtime concorda (`lib/env.ts`
+# trata as três chaves como opcionais; faltar todas é `warn`, não erro) — mas o
+# instalador exigia uma chave que PASSASSE numa chamada real, e não havia
+# caminho para subir o produto sem antes abrir conta num provedor de IA. Quem
+# pula instala, e o caminho de volta sai na tela final (`pendencia_da_ia`, no
+# fecho). O validador continua valendo para quem digita uma chave — o que
+# mudou é que pular deixou de ser erro.
 case "$AI_PROVIDER" in
-  openrouter) CAMPO_IA="OPENROUTER_API_KEY|Chave da OpenRouter — a IA que atende (openrouter.ai/keys)||v_openrouter|secret|";;
-  openai)     CAMPO_IA="OPENAI_API_KEY|Chave da OpenAI — a IA que atende (platform.openai.com/api-keys)||v_openai|secret|";;
-  *)          CAMPO_IA="ANTHROPIC_API_KEY|Chave da Anthropic — a IA que atende (console.anthropic.com)||v_anthropic|secret|";;
+  openrouter) CAMPO_IA="OPENROUTER_API_KEY|Chave da OpenRouter — a IA que atende (openrouter.ai/keys; Enter pula: dá para cadastrar depois pela tela, em IA › Credenciais)||v_openrouter|secret|opcional";;
+  openai)     CAMPO_IA="OPENAI_API_KEY|Chave da OpenAI — a IA que atende (platform.openai.com/api-keys; Enter pula: dá para cadastrar depois pela tela, em IA › Credenciais)||v_openai|secret|opcional";;
+  *)          CAMPO_IA="ANTHROPIC_API_KEY|Chave da Anthropic — a IA que atende (console.anthropic.com; Enter pula: dá para cadastrar depois pela tela, em IA › Credenciais)||v_anthropic|secret|opcional";;
 esac
 
 # A chave da OpenAI é pedida À PARTE quando ela NÃO é o provedor de conversa,
@@ -1028,7 +1186,7 @@ esac
 if [ "$AI_PROVIDER" = "openai" ]; then
   CAMPO_OPENAI_EXTRA=""
 else
-  CAMPO_OPENAI_EXTRA="OPENAI_API_KEY|Chave da OpenAI — só para ouvir áudios e usar a base de conhecimento (Enter pula)||v_openai|secret|opcional"
+  CAMPO_OPENAI_EXTRA="OPENAI_API_KEY|Chave da OpenAI — só para ouvir áudios e usar a base de conhecimento (Enter pula: dá para cadastrar depois pela tela, em IA › Credenciais)||v_openai|secret|opcional"
 fi
 
 # ── A versão que esta instalação vai rodar ───────────────────────────────────
@@ -1086,11 +1244,25 @@ FIELDS=(
   "NEXT_PUBLIC_SUPABASE_ANON_KEY|Supabase anon key (Settings > API)||v_anon||"
   "SUPABASE_SERVICE_ROLE_KEY|Supabase service_role key (Settings > API)||v_service|secret|"
   "SUPABASE_DB_URL|Supabase connection string — Session pooler, modo URI (Settings > Database)||v_db_url|secret|"
+  # Token de conta, e por isso NÃO vai para o `.env` (não há `envq` para ele):
+  # a Management API que ele abre cria e apaga projetos, e guardá-lo numa VPS
+  # seria trocar um bug de primeira impressão por um passivo de segurança. Ele
+  # é usado uma vez, aqui, e some com o processo.
+  #
+  # Sem ele, o Site URL do projeto Supabase fica em `localhost:3000` — e o reset
+  # de senha, a confirmação de e-mail e o aceite de convite chegam com link para
+  # uma máquina que não existe fora do laptop de quem desenvolve. Era o estado
+  # de TODA instalação feita pelo caminho documentado. (issue #431/#426)
+  "SUPABASE_ACCESS_TOKEN|Token de acesso do Supabase — configura os links de e-mail (supabase.com/dashboard/account/tokens). NÃO fica salvo. Enter pula|||secret|opcional"
   "$CAMPO_IA"
   ${CAMPO_OPENAI_EXTRA:+"$CAMPO_OPENAI_EXTRA"}
   "OWNER_EMAIL|E-mail do primeiro admin (dono)||v_email||"
   "OWNER_PASSWORD|Senha do primeiro admin (mínimo 8 caracteres)||v_password|secret|"
   "APP_NAME|Nome que aparece na interface (Enter para o padrão)|DeskcommCRM|||"
+  # Idioma da instalação. Fica JUNTO do nome do produto de propósito: as duas
+  # perguntas são "como o sistema se apresenta", e separá-las faria a segunda
+  # parecer configuração técnica.
+  "APP_LOCALE|Idioma do sistema — 1) Português  2) Español (Enter = Português)|1|v_locale||"
   # Sem default, e `opcional`: em `--yes` o `ask_one` devolve 0 sem associar a
   # variável (campo sem default e sem `opcional` morre em `die`), e o `envq` lá
   # embaixo usa `${APP_ACCENT_HEX:-}`. Enter = a cor do produto, que é o
@@ -1180,6 +1352,13 @@ gen_b64() { openssl rand -base64 32; }
 : "${WAHA_HMAC_SECRET:=$(gen_hex)}"
 : "${SRH_TOKEN:=$(gen_hex)}"
 : "${WAHA_API_KEY:=$(gen_hex)}"
+# Chamada de voz (spec 18). Gerados SEMPRE, mesmo com a feature desligada: o
+# serviço não sobe sem admin, e pedir ao dono que invente três segredos no dia
+# em que ele quiser ligar a voz é o "edite o .env à mão" que a doutrina de
+# packaging proíbe. Gerar não liga nada — quem liga é COMPOSE_PROFILES.
+: "${WACALLS_ADMIN_USER:=deskcomm}"
+: "${WACALLS_ADMIN_PASSWORD:=$(gen_hex)}"
+: "${WACALLS_API_TOKEN:=$(gen_hex)}"
 # O container WAHA espera o HASH SHA512 hex; o app envia o plaintext no X-Api-Key.
 WAHA_API_KEY_SHA512="$(printf '%s' "$WAHA_API_KEY" | openssl dgst -sha512 -hex | awk '{print $NF}')"
 UPSTASH_REDIS_REST_TOKEN="$SRH_TOKEN"
@@ -1210,6 +1389,25 @@ fi
 if [ "$REVERSE_PROXY" = "traefik" ] && [ -z "${TRAEFIK_NETWORK:-}" ]; then
   die "Não consegui descobrir a rede Docker do seu Traefik. Rode 'docker network ls',
 identifique a rede dele e ponha TRAEFIK_NETWORK=<nome> no .env antes de tentar de novo."
+fi
+# Os nomes dos entrypoints saem do MESMO contêiner que já respondeu pela rede.
+# Só entra onde o .env está vazio: quem declarou o nome à mão manda mais que a
+# leitura — é a mesma regra que TRAEFIK_NETWORK segue logo acima.
+if [ "$REVERSE_PROXY" = "traefik" ] && [ -n "$traefik_container" ] \
+   && { [ -z "${TRAEFIK_ENTRYPOINT:-}" ] || [ -z "${TRAEFIK_ENTRYPOINT_HTTP:-}" ]; }; then
+  traefik_conf="$(docker inspect \
+    -f '{{range .Config.Env}}{{println .}}{{end}}{{range .Args}}{{println .}}{{end}}' \
+    "$traefik_container" 2>/dev/null || true)"
+  entrypoints_achados="$(entrypoints_do_traefik "$traefik_conf")"
+  if [ -z "${TRAEFIK_ENTRYPOINT_HTTP:-}" ] && [ -n "${entrypoints_achados%% *}" ]; then
+    TRAEFIK_ENTRYPOINT_HTTP="${entrypoints_achados%% *}"
+  fi
+  if [ -z "${TRAEFIK_ENTRYPOINT:-}" ] && [ -n "${entrypoints_achados##* }" ]; then
+    TRAEFIK_ENTRYPOINT="${entrypoints_achados##* }"
+  fi
+  if [ -n "${TRAEFIK_ENTRYPOINT:-}" ]; then
+    c_dim "  (entrypoints do seu Traefik: ${TRAEFIK_ENTRYPOINT_HTTP:-web} para HTTP, ${TRAEFIK_ENTRYPOINT} para HTTPS)"
+  fi
 fi
 # Confere (e cria, quando a rede é a nossa) — em _common.sh, porque o update.sh
 # precisa da mesma garantia antes do `dc up -d` dele. Também aplica o default
@@ -1361,12 +1559,21 @@ esac
   envq WORKER_PULL_POLICY "$PULL_POLICY_ALVO"
   envq SCHEDULER_IMAGE "${IMG_SCHEDULER}:${TAG_ALVO}"
   envq SCHEDULER_PULL_POLICY "$PULL_POLICY_ALVO"
+  # A telefonia por SIP (profile `telefonia`, desligado por padrão) também segue
+  # a versão: gravar não liga nada, e no dia em que ligarem ela sobe casada.
+  envq VOICE_AGENT_IMAGE "${IMG_VOICE_AGENT}:${TAG_ALVO}"
+  envq VOICE_AGENT_PULL_POLICY "$PULL_POLICY_ALVO"
   envq DOMAIN "$DOMAIN"
   envq ACME_EMAIL "$ACME_EMAIL"
-  printf '# Proxy reverso: "caddy" (o kit sobe o dele nas portas 80/443) ou "traefik"\n'
-  printf '# (o VPS já tem um Traefik nessas portas — Hostinger, Coolify, Dokploy...).\n'
-  printf '# Em "traefik" entra o docker-compose.traefik.yml, que desliga o Caddy e\n'
-  printf '# publica o app por labels. TRAEFIK_* só é lido nesse modo.\n'
+  printf '# Proxy reverso: "caddy" (o kit sobe o dele nas portas 80/443), "traefik"\n'
+  printf '# (o VPS já tem um Traefik nessas portas — Hostinger, Coolify, Dokploy...)\n'
+  printf '# ou "npm" (Nginx Proxy Manager, que não lê labels — ver o cabeçalho de\n'
+  printf '# docker-compose.npm.yml). Em "traefik" entra o docker-compose.traefik.yml,\n'
+  printf '# que desliga o Caddy e publica o app por labels (TRAEFIK_* só é lido nesse\n'
+  printf '# modo). Em "npm" entra o docker-compose.npm.yml, que também desliga o Caddy\n'
+  printf '# e fixa o app na rede/IP que o Proxy Host espera (PROXY_NETWORK_* só é lido\n'
+  printf '# nesse modo, e é sempre configuração manual — não há como detectar o NPM\n'
+  printf '# sozinho, ao contrário do Traefik).\n'
   envq REVERSE_PROXY "$REVERSE_PROXY"
   # O default mora aqui, junto dos irmãos TRAEFIK_* logo abaixo, e não numa
   # atribuição solta lá atrás: em modo caddy ninguém DECIDE esta variável, e
@@ -1387,9 +1594,19 @@ esac
   printf '# Marca da instalação (white-label). Preencha APP_LOGO_URL com a URL de uma\n'
   printf '# imagem pública para trocar o texto por logo na sidebar. Ver lib/branding.ts.\n'
   printf '# APP_ACCENT_HEX é a SEMENTE da cor: o banco (platform_branding) manda depois\n'
-  printf '# da primeira leitura, mas é daqui que sai a cor dos e-mails de acesso, que o\n'
-  printf '# marca-emails.sh empurra para o GoTrue e o banco não alcança.\n'
+  printf '# da primeira leitura. Nos e-mails de acesso depende da topologia: na NUVEM do\n'
+  printf '# Supabase quem empurra é o marca-emails.sh, lendo daqui, e o banco não alcança;\n'
+  printf '# num Supabase PRÓPRIO o GoTrue busca /email-templates/ do app, que resolve a\n'
+  printf '# marca pelo banco — e aí trocar em Configurações > Marca chega ao e-mail.\n'
+  # Normaliza a escolha do idioma ANTES de gravar: o campo aceita "1"/"2"
+  # porque é o que se digita lendo um menu numerado, mas quem lê o `.env` — o
+  # bootstrap, o SQL abaixo, um operador conferindo — precisa do código.
+  case "${APP_LOCALE:-}" in
+    2|es) APP_LOCALE="es";;
+    *)    APP_LOCALE="pt-BR";;
+  esac
   envq APP_NAME "$APP_NAME"
+  envq APP_LOCALE "$APP_LOCALE"
   envq APP_LOGO_URL "${APP_LOGO_URL:-}"
   # Perguntar sem gravar seria PIOR que não perguntar: este bloco fecha com
   # `} > .env`, que TRUNCA o arquivo a partir da lista fechada de `envq` acima e
@@ -1402,6 +1619,19 @@ esac
   printf '# Endereço de suporte que o CLIENTE FINAL vê (conta suspensa, cobrança).\n'
   printf '# Vazio = a tela não mostra endereço nenhum.\n'
   envq SUPPORT_EMAIL "${SUPPORT_EMAIL:-}"
+  # AGENDA · GOOGLE CALENDAR — gravadas VAZIAS, e de propósito NÃO perguntadas.
+  #
+  # Sem as duas a Agenda funciona inteira: some o botão "Conectar Google" e a
+  # tela explica o que falta — inclusive o endereço de retorno a registrar no
+  # console, pronto para copiar. Quem quiser ligar preenche no `.env` depois.
+  #
+  # ⚠️ Não viram pergunta na entrevista porque o instalador é a PRIMEIRA
+  # impressão do produto: duas perguntas a mais, sobre um recurso opcional que a
+  # maioria não usa, custam a todo mundo para servir a poucos. Elas existem aqui
+  # para que quem PREENCHER à mão não perca o valor no próximo `install.sh` —
+  # que é exatamente o que o gate `test-validators.sh` cobra.
+  envq GOOGLE_CALENDAR_CLIENT_ID "${GOOGLE_CALENDAR_CLIENT_ID:-}"
+  envq GOOGLE_CALENDAR_CLIENT_SECRET "${GOOGLE_CALENDAR_CLIENT_SECRET:-}"
   # As três acima e as duas abaixo entram aqui pelo MESMO motivo, e não por
   # simetria: o .env é escrito com truncamento (`} > .env`, no fecho deste
   # bloco), então chave que este script não grava é APAGADA na execução
@@ -1412,6 +1642,21 @@ esac
   printf '# mostra o link de aceite na tela e o export de LGPD fica pendente.\n'
   envq RESEND_API_KEY "${RESEND_API_KEY:-}"
   envq RESEND_FROM_EMAIL "${RESEND_FROM_EMAIL:-}"
+  # SMTP: a alternativa à Resend. Gravado pelo mesmo motivo das duas acima — o
+  # `.env` é truncado, e o SMTP posto à mão sumiria na próxima execução. A tela
+  # /admin/email grava no banco, que prevalece; isto é o piso de rollback.
+  # Host ou remetente vazio mantém o envio desligado sem falhar.
+  printf '# E-mail pelo SEU servidor (SMTP). Preenchido, sai por ele; vazio, segue
+'
+  printf '# pela Resend. Só o hostname. 465 + tls, ou 587 + starttls.
+'
+  envq SMTP_HOST "${SMTP_HOST:-}"
+  envq SMTP_PORT "${SMTP_PORT:-587}"
+  envq SMTP_SECURITY "${SMTP_SECURITY:-starttls}"
+  envq SMTP_USERNAME "${SMTP_USERNAME:-}"
+  envq SMTP_PASSWORD "${SMTP_PASSWORD:-}"
+  envq SMTP_FROM_EMAIL "${SMTP_FROM_EMAIL:-}"
+  envq SMTP_FROM_NAME "${SMTP_FROM_NAME:-}"
   printf '# Qual provedor você escolheu na instalação. É o que faz a 2ª execução do\n'
   printf '# install.sh já vir com a sua escolha como padrão, em vez de re-adivinhar\n'
   printf '# pelas chaves presentes. A app não lê esta variável.\n'
@@ -1431,6 +1676,18 @@ esac
   printf '# OpenAI: transcrição dos áudios do WhatsApp (Whisper) + embeddings do RAG.\n'
   printf '# Opcional — sem ela a IA responde sem a base e pede o áudio em texto.\n'
   envq OPENAI_API_KEY "${OPENAI_API_KEY:-}"
+  printf '# Web Push: aviso na bandeja do sistema com a aba do CRM fechada.\n'
+  printf '# Opcional e VAZIO por padrão — sem o par, os avisos aparecem só com o\n'
+  printf '# site aberto, que é exatamente o que acontecia antes. Para ligar:\n'
+  printf '#   npx web-push generate-vapid-keys\n'
+  printf '# e cole as duas chaves aqui (depois: docker compose up -d app).\n'
+  envq VAPID_PUBLIC_KEY "${VAPID_PUBLIC_KEY:-}"
+  envq VAPID_PRIVATE_KEY "${VAPID_PRIVATE_KEY:-}"
+  printf '# Provisionamento por sistema externo (POST /api/v1/tenants/provision):\n'
+  printf '# um sistema de fora cria empresas nesta instalação. DESLIGADO — vazio, a\n'
+  printf '# rota responde 404. Para ligar: openssl rand -hex 32, cole aqui e entregue\n'
+  printf '# só ao sistema que vai criar empresas (depois: docker compose up -d app).\n'
+  envq TENANT_PROVISIONING_SECRET "${TENANT_PROVISIONING_SECRET:-}"
   printf '# Telemetria de erros (você escolheu isto durante a instalação).\n'
   printf '#   "off"  = não envia nada.\n'
   printf '#   vazio  = só ERRO pro Sentry da comunidade, com CPF/telefone/e-mail\n'
@@ -1450,6 +1707,16 @@ esac
   envq WAHA_API_KEY "$WAHA_API_KEY"
   envq WAHA_API_KEY_SHA512 "$WAHA_API_KEY_SHA512"
   envq WAHA_HMAC_SECRET "$WAHA_HMAC_SECRET"
+  printf '# Chamada de voz WhatsApp (spec 18) — DESLIGADA. Ligá-la vincula um SEGUNDO\n'
+  printf '# aparelho ao mesmo número que já atende, por um caminho que não é o oficial:\n'
+  printf '# o risco é a CONTA ser bloqueada. Para ligar: COMPOSE_PROFILES=voz e\n'
+  printf '# WACALLS_API_BASE_URL=http://wacalls:8080, depois ./update.sh e, na tela,\n'
+  printf '# Configurações › Segurança. Vazio = o serviço nem é criado.\n'
+  envq COMPOSE_PROFILES "${COMPOSE_PROFILES:-}"
+  envq WACALLS_API_BASE_URL "${WACALLS_API_BASE_URL:-}"
+  envq WACALLS_ADMIN_USER "$WACALLS_ADMIN_USER"
+  envq WACALLS_ADMIN_PASSWORD "$WACALLS_ADMIN_PASSWORD"
+  envq WACALLS_API_TOKEN "$WACALLS_API_TOKEN"
   printf '# "true" exige assinatura em todo webhook do WAHA. O WAHA Core NÃO assina,\n'
   printf '# então ligar isto sem um WAHA Plus (ou proxy que assine) para a ingestão\n'
   printf '# de mensagens. A rota global já não é publicada na internet (ver Caddyfile).\n'
@@ -1563,16 +1830,15 @@ if [ -f supabase/baseline.sql ]; then
 
   if [ "$has_schema" = "1" ]; then
     c_ylw "• schema já existe — re-aplicando em modo update (erros 'já existe' são esperados e ficam no log)"
-    raw="$(docker run --rm -i -v "$PROJECT_DIR/supabase/baseline.sql:/baseline.sql:ro" \
-          postgres:17-alpine psql "$(url_do_schema)" -q -f /baseline.sql 2>&1 || true)"
-    printf '%s\n' "$raw" > "$SCHEMA_LOG"
-    benign='already exists|multiple primary keys|multiple default values|is already a member|already a partition'
-    unexpected="$(printf '%s\n' "$raw" | grep -iE 'ERROR|FATAL' | grep -viE "$benign" || true)"
-    if [ -n "$unexpected" ]; then
-      c_ylw "⚠ Erros no banco que NÃO são os esperados (log completo: $SCHEMA_LOG):"
-      printf '%s\n' "$unexpected" | head -20
-    else
+    # Mesmo contrato do update.sh, inclusive a nova passada quando o banco está
+    # em disputa: `reaplicar_baseline` em _common.sh.
+    if reaplicar_baseline "$PROJECT_DIR/supabase/baseline.sql" "$SCHEMA_LOG"; then
       c_grn "✓ schema re-aplicado (apêndice de migrations incluído)"
+    else
+      c_ylw "⚠ Erros no banco que NÃO são os esperados (log completo: $SCHEMA_LOG):"
+      # Sem `| head`: com pipefail, o head que fecha cedo mata o printf com SIGPIPE
+      # numa lista grande, e o set -e derrubava o instalador aqui.
+      listar_erros_do_banco "$BASELINE_INESPERADO" 20
     fi
   else
     if docker run --rm -i -v "$PROJECT_DIR/supabase/baseline.sql:/baseline.sql:ro" \
@@ -1612,7 +1878,133 @@ fi
 #
 # `|| true` como cinto de segurança: o script já promete nunca sair diferente de
 # 0, e mesmo assim a instalação não pode morrer por causa do e-mail.
-bash "$KIT_DIR/marca-emails.sh" --projeto "$PROJECT_DIR" || true
+# O que o `marca-emails.sh` não conseguiu fazer sozinho, repetido na TELA FINAL
+# com o domínio já preenchido.
+#
+# O aviso dele existe desde sempre, e sai ~200 linhas antes do fim — no meio de
+# um log de dez minutos, seguido de uma tela verde de "Instalação concluída!".
+# Quem instala não volta para lê-lo, e descobre o problema quando um usuário
+# clica em "esqueci minha senha" e cai num `localhost:3000` que não existe fora
+# da máquina de quem desenvolve. (issue #431/#426)
+pendencia_dos_emails() {
+  [ -s "${PENDENCIA_EMAIL:-/dev/null}" ] || return 0
+
+  # A receita DEPENDE DA TOPOLOGIA, e mandar a errada é pior que não mandar
+  # nada. Num Supabase PRÓPRIO não existe supabase.com/dashboard nem
+  # Management API: quem configura é env do GoTrue. Este bloco já mandou o
+  # self-hoster para um painel que ele não tem — e a pessoa fica achando que
+  # perdeu a senha do Supabase quando o que falta é uma variável.
+  case "${NEXT_PUBLIC_SUPABASE_URL:-}" in
+    https://*.supabase.co*) : ;;
+    *) pendencia_dos_emails_proprio; return 0 ;;
+  esac
+
+  cat <<PEND
+
+$(c_ylw "  ─── FALTA UM PASSO, e ele é no painel do Supabase ─────")
+
+  Os e-mails de acesso (esqueci minha senha, confirmação de cadastro e
+  aceite de convite) ainda não levam para este app. Sem este passo,
+  ninguém consegue redefinir a própria senha.
+
+  O que o passo automático encontrou:
+
+$(sed 's/^/    /' "$PENDENCIA_EMAIL")
+
+  Em https://supabase.com/dashboard → seu projeto → Authentication →
+  URL Configuration, preencha:
+
+       Site URL:       https://${DOMAIN}
+       Redirect URLs:  https://${DOMAIN}/auth/confirm
+
+  Depois é só salvar — não precisa reiniciar nada aqui.
+
+  Para o instalador fazer isso sozinho da próxima vez, rode
+  \`bash hostgator-setup-kit/install.sh\` de novo e informe o token de
+  acesso quando ele perguntar (supabase.com/dashboard/account/tokens).
+PEND
+}
+
+# ── A mesma pendência, na topologia em que o Supabase é seu ─────────────────
+# POR QUE O INSTALADOR NÃO ESCREVE ISTO SOZINHO: o GoTrue não é serviço deste
+# compose. O kit sobe app, worker, scheduler, waha, redis, srh e caddy; o
+# Supabase próprio é outra stack, com outro arquivo, que pode nem estar nesta
+# máquina. Escrever nele seria o instalador editar a instalação de terceiro.
+# Então ele faz o que pode fazer com honestidade: diz as duas linhas exatas, e
+# o healthcheck.sh confere depois se elas chegaram.
+pendencia_dos_emails_proprio() {
+  cat <<PEND
+
+$(c_ylw "  ─── FALTA UM PASSO, no SEU Supabase ───────────────────")
+
+  Os e-mails de acesso (confirmar cadastro e redefinir senha) ainda saem no
+  modelo padrão do GoTrue. O link desse modelo NÃO fecha a sessão quando o
+  clique vem do webmail — a conta é confirmada e a pessoa entra sem
+  organização e sem menu.
+
+  O que o passo automático encontrou:
+
+$(sed 's/^/    /' "$PENDENCIA_EMAIL")
+
+  Como o seu Supabase é próprio, não há painel na nuvem nem API para isto:
+  a configuração é por variável de ambiente do serviço \`auth\` (GoTrue).
+  Acrescente ao compose DELE — não a este:
+
+       GOTRUE_SITE_URL=https://${DOMAIN}
+       GOTRUE_URI_ALLOW_LIST=https://${DOMAIN}/auth/confirm
+       GOTRUE_MAILER_TEMPLATES_CONFIRMATION=https://${DOMAIN}/email-templates/confirmation
+       GOTRUE_MAILER_TEMPLATES_RECOVERY=https://${DOMAIN}/email-templates/recovery
+
+  $(c_ylw "Tem de ser URL http(s).") O GoTrue cola no fim do SITE_URL tudo o que não
+  começa com \`http\` e busca por HTTP — um caminho de arquivo faz o cliente
+  receber a tela de login dentro do e-mail.
+
+  Depois reinicie só o auth do seu Supabase e confira aqui com:
+
+       bash hostgator-setup-kit/healthcheck.sh
+PEND
+}
+
+# ── A pendência da IA, quando a chave ficou para depois ─────────────────────
+# A #670 tornou o campo da chave `opcional`: antes o instalador morria sem uma
+# chave que passasse numa chamada real, contra a doc e contra o runtime.
+# Instalar sem chave é legítimo; o que não pode é a pessoa terminar sem saber
+# que a IA ainda não atende e ONDE cadastrar depois. Este bloco repete o
+# caminho na TELA FINAL, que é a única tela que a pessoa lê inteira.
+#
+# Critério: nenhuma credencial DE AMBIENTE preenchida — nem a do provedor
+# escolhido, nem o AI Gateway (que tem precedência na resolução do chat, ver
+# `.env.hostgator.example`). Credencial cadastrada pela tela (banco) não dá
+# para ver daqui; quem já cadastrou reconhece o aviso e ignora.
+pendencia_da_ia() {
+  local chave="" rotulo=""
+  case "${AI_PROVIDER:-anthropic}" in
+    openrouter) chave="${OPENROUTER_API_KEY:-}"; rotulo="OpenRouter" ;;
+    openai)     chave="${OPENAI_API_KEY:-}";     rotulo="OpenAI" ;;
+    *)          chave="${ANTHROPIC_API_KEY:-}";  rotulo="Anthropic" ;;
+  esac
+  [ -n "$chave" ] && return 0
+  [ -n "${AI_GATEWAY_API_KEY:-}" ] && return 0
+
+  cat <<PEND
+
+$(c_ylw "  ─── A IA ainda não atende — falta cadastrar a chave ───")
+
+  Você deixou a chave de IA para depois, e o CRM está no ar sem ela. O que
+  ainda não funciona é o agente: ele responde quando uma credencial existir.
+
+  Quando tiver a chave da ${rotulo}, cadastre em:
+
+      IA › Credenciais
+
+  A chave fica CIFRADA no banco — não precisa mexer no .env nem reiniciar nada.
+PEND
+}
+
+PENDENCIA_EMAIL="$(mktemp)"
+PENDENCIA_ARQUIVO="$PENDENCIA_EMAIL" \
+  SUPABASE_ACCESS_TOKEN="${SUPABASE_ACCESS_TOKEN:-}" \
+  bash "$KIT_DIR/marca-emails.sh" --projeto "$PROJECT_DIR" || true
 
 # ── 8. Bootstrap do 1º dono (cria no Auth + promove via psql) ───────────────
 step "Criando o primeiro admin (${OWNER_EMAIL})"
@@ -1622,7 +2014,7 @@ curl -fsS -X POST "${NEXT_PUBLIC_SUPABASE_URL}/auth/v1/admin/users" \
   -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
   -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
   -H "Content-Type: application/json" \
-  -d "{\"email\":\"${OWNER_EMAIL}\",\"password\":\"${OWNER_PASSWORD}\",\"email_confirm\":true}" \
+  -d "{\"email\":\"${OWNER_EMAIL}\",\"password\":\"${OWNER_PASSWORD}\",\"email_confirm\":true,\"user_metadata\":{\"locale\":\"${APP_LOCALE:-pt-BR}\"}}" \
   >/dev/null 2>&1 || true
 
 # 2) Resolve o id direto do auth.users e cria org + membership + platform_admin.
@@ -1642,8 +2034,21 @@ begin
   end if;
   select id into v_org from public.organizations where slug='minha-empresa';
   if v_org is null then
-    insert into public.organizations (slug, display_name, legal_name, created_by)
-    values ('minha-empresa','Minha Empresa','Minha Empresa', v_uid) returning id into v_org;
+    -- locale aqui, e não só no usuário dono: é a organização que responde
+    -- pelos convidados que ainda não existem. Quem entra sem preferência
+    -- própria cai neste valor, então gravar só no dono entregaria o sistema em
+    -- português para todo mundo que ele convidasse numa instalação em espanhol.
+    insert into public.organizations (slug, display_name, legal_name, locale, created_by)
+    values ('minha-empresa','Minha Empresa','Minha Empresa','${APP_LOCALE:-pt-BR}', v_uid)
+    returning id into v_org;
+  else
+    -- Re-execução do instalador com outra resposta: quem rodou de novo para
+    -- trocar o idioma esperaria que trocasse. Só mexe se a organização ainda
+    -- estiver no padrão — se alguém já escolheu pela tela, a escolha dela vale
+    -- mais que uma resposta repetida no terminal.
+    update public.organizations
+       set locale = '${APP_LOCALE:-pt-BR}'
+     where id = v_org and coalesce(locale, 'pt-BR') = 'pt-BR';
   end if;
   -- O provedor que a pessoa ESCOLHEU passa a valer no banco. O trigger
   -- fn_seed_org_llm_defaults semeia 'anthropic' fixo — o que estava certo
@@ -1666,8 +2071,37 @@ begin
   values (v_uid, v_org, 'admin', now())
   on conflict (user_id, organization_id) do update set role='admin', revoked_at=null;
   if not exists (select 1 from public.platform_admins where user_id=v_uid and revoked_at is null) then
-    insert into public.platform_admins (user_id, granted_by, scope, reason)
-    values (v_uid, v_uid, 'full', 'Bootstrap inicial do self-host');
+    -- ⚠️ ATENÇÃO: este heredoc NÃO é citado, então o bash expande crase aqui
+    -- dentro. Crase em volta de nome de coluna vira substituição de comando e o
+    -- instalador morre com "command not found" no meio da criação do dono.
+    -- Medido: a primeira versão deste comentário usava crase e a suíte do kit
+    -- reprovou em três casos. Nome de coluna aqui vai sem crase.
+    --
+    -- mfa_required EXPLÍCITO, contra o default "true" da coluna — a MESMA razão
+    -- que scripts/bootstrap-owner.ts:201 já documenta, e que este INSERT não
+    -- acompanhou.
+    --
+    -- Medido numa instalação self-host recém-feita por este script:
+    --
+    --   select column_default from information_schema.columns
+    --    where table_name='platform_admins' and column_name='mfa_required';
+    --   -> true
+    --
+    -- Como o INSERT abaixo não informava a coluna, TODA instalação nascia
+    -- exigindo TOTP do dono. lib/auth/politica-mfa.ts passou a LER essa coluna
+    -- (antes o gate olhava só is_platform_admin), e o cabeçalho dele registra
+    -- que o cadastro virou opcional exatamente para acabar com o bloqueador de
+    -- tela cheia logo depois do onboarding — "segurança que expulsa o usuário na
+    -- primeira tela não protege ninguém".
+    --
+    -- Ou seja: o defeito que a mudança de doutrina eliminou continuava vivo pelo
+    -- caminho do instalador, que é justamente o caminho de TODO self-hoster. O
+    -- bootstrap-owner.ts estava certo; este INSERT é que ficou para trás.
+    --
+    -- false e não omitir: quem quiser exigir liga em Configurações › Segurança,
+    -- e a decisão fica visível na linha em vez de herdada de um default.
+    insert into public.platform_admins (user_id, granted_by, scope, mfa_required, reason)
+    values (v_uid, v_uid, 'full', false, 'Bootstrap inicial do self-host');
   end if;
 end \$\$;
 SQL
@@ -1690,8 +2124,24 @@ if ! dc pull; then
   c_ylw "⚠ Não consegui puxar todas as imagens do registro."
   c_ylw "  Sigo assim mesmo: o que faltar é construído aqui (mais lento, mesmo resultado)."
 fi
-dc up -d
+# O "sigo assim mesmo" acima vale para o worker e o scheduler, que têm `build:`
+# ao lado do `image:` — mas NÃO para o app, que não tem: se a imagem dele não
+# veio do registro (arquitetura da VPS diferente da das imagens publicadas, tag
+# ainda publicando, pacote privado), o `up -d` morre e a instalação acabava sem
+# CRM no ar. A promessa da frase acima só se sustenta com esta guarda.
+CONSTRUIU_AQUI=""
+if ! dc up -d; then
+  if construir_aqui_e_subir "$VERSAO_ALVO"; then
+    CONSTRUIU_AQUI=1
+  else
+    die "Não coloquei o CRM no ar: nem as imagens prontas desta versão nem a construção aqui funcionaram. O erro está logo acima; para reproduzir só a construção: docker compose $(dc_files) -f ${COMPOSE_BUILD} build"
+  fi
+fi
 c_grn "✓ containers no ar"
+if [ -n "$CONSTRUIU_AQUI" ]; then
+  c_ylw "  (as três imagens desta versão foram construídas aqui nesta VPS: as prontas"
+  c_ylw "   não servem para a arquitetura dela. É mais lento e não precisa de nada manual.)"
+fi
 
 # ── 10. Healthcheck ─────────────────────────────────────────────────────────
 step "Aguardando o app ficar saudável"
@@ -1711,9 +2161,39 @@ else
   [ -n "$health_body" ] && c_dim "  última resposta: $(printf '%s' "$health_body" | head -c 200 || true)"
 fi
 
+# O catálogo dos provedores diretos vem no baseline, mas a OpenRouter é grande
+# demais para ser congelada nele: seus ~400 modelos chegam pelo cron diário
+# `api/v1/cron/sync-model-catalog`, que o scheduler bate às 04:15 UTC
+# (docker/scheduler/entrypoint.sh). Numa instalação concluída DEPOIS dessa
+# rodada, o seletor de modelos do agente ficava vazio até o dia seguinte —
+# mesmo com uma chave OpenRouter válida já cadastrada. É a primeira tela que
+# quem instalou vai abrir para testar a IA.
+#
+# O segredo NÃO passa pelo argv deste processo: as aspas simples impedem a
+# expansão aqui, e quem expande `$INTERNAL_SECRET` é o sh de dentro do
+# contêiner `scheduler`, que já o recebe pelo ambiente (docker-compose.prod.yml).
+#
+# FALHA ABERTA, de propósito: a origem é externa (openrouter.ai) e pode estar
+# fora do ar no minuto da instalação. Uma instalação saudável não pode ser
+# invalidada por isso — o cron das 04:15 continua sendo a recuperação, e o
+# operador lê aqui que ela existe. Por isso o comando mora na CONDIÇÃO de um
+# `if`, onde o `set -e` não aborta o script.
+if [ "${APP_SAUDAVEL:-0}" = 1 ]; then
+  step "Semeando o catálogo de modelos de IA"
+  if catalogo_body="$(dc exec -T scheduler sh -c 'curl -fsS -m60 -H "Authorization: Bearer $INTERNAL_SECRET" http://app:3000/api/v1/cron/sync-model-catalog' 2>&1)"; then
+    c_grn "✓ catálogo de modelos semeado"
+  else
+    c_ylw "⚠ não consegui semear o catálogo de modelos agora; o agendador tenta de novo às 04:15 UTC."
+    [ -n "$catalogo_body" ] && c_dim "  detalhe: $(printf '%s' "$catalogo_body" | head -c 200 || true)"
+  fi
+fi
+
 # ── 11. Automações (cron do drain de eventos) ───────────────────────────────
 step "Ativando as automações"
 ensure_encryption_key .env
+# A senha desta instalação nasceu agora e vai para um arquivo, nunca para a
+# linha do crontab: não há o que trocar depois (ver trocar_segredo_do_cron_vazado).
+marcar_segredo_do_cron_como_novo
 setup_event_log_drain_cron
 setup_update_agent_cron
 
@@ -1758,12 +2238,28 @@ INCOMPLETO
   exit 1
 fi
 
+# O banner dizia "por padrão os erros são enviados" para TODA instalação — e a
+# pergunta de consentimento acima tem padrão NÃO enviar (issue #668 mediu o
+# .env do exemplo saindo com a telemetria ligada sem ninguém escolher). O texto
+# passa a refletir a escolha feita, em vez de afirmar um padrão.
+telemetria_no_banner() {
+  if [ "${SENTRY_DSN:-}" = "off" ]; then
+    printf '%s\n' "  Telemetria: DESLIGADA — nenhum relatório de erro sai desta instalação."
+    printf '%s\n' "  Para ligar, apague a linha SENTRY_DSN do .env e rode: docker compose $(dc_files) up -d"
+  else
+    printf '%s\n' "  Telemetria: LIGADA — só relatórios de erro anonimizados vão ao Sentry do"
+    printf '%s\n' "  projeto. Para desligar, ponha SENTRY_DSN='off' no .env e rode: docker compose $(dc_files) up -d"
+  fi
+}
+
 cat <<DONE
 
 $(c_grn "═══════════════════════════════════════════════════════")
 $(c_grn " Instalação concluída!")
 $(c_grn "═══════════════════════════════════════════════════════")
 
+$(pendencia_dos_emails)
+$(pendencia_da_ia)
   1. Acesse:  https://${DOMAIN}
      (o SSL leva ~1min pra emitir no primeiro acesso)
 
@@ -1776,9 +2272,9 @@ $(c_grn "═══════════════════════�
        antes de abrir a tela — o QR code vale só uns minutos. Se expirar,
        o próprio CRM tem o botão "Gerar novo QR Code".
 
-  4. Ao terminar o onboarding, o CRM pede a verificação em duas etapas:
-       tenha o Google Authenticator/Authy à mão e GUARDE os códigos de
-       recuperação que aparecem. Perdeu o celular? bash hostgator-setup-kit/reset-mfa.sh ${OWNER_EMAIL}
+  4. A verificação em duas etapas é OPCIONAL: quem quiser liga em
+       Configurações → Segurança (guarde os códigos de recuperação).
+       Perdeu o celular? bash hostgator-setup-kit/reset-mfa.sh ${OWNER_EMAIL}
 
 $(c_grn "  ─── A comunidade ──────────────────────────────────────")
 
@@ -1787,9 +2283,7 @@ $(c_grn "  ─── A comunidade ───────────────�
 
        ${COMUNIDADE_URL}
 
-  Telemetria: por padrão os erros desta instalação são enviados ao Sentry do
-  projeto, o que ajuda a corrigir falhas que afetam todo mundo. Para desligar,
-  ponha SENTRY_DSN='off' no .env e rode: docker compose $(dc_files) up -d
+$(telemetria_no_banner)
 
   Comandos úteis:
     ver logs:      docker compose $(dc_files) logs -f app

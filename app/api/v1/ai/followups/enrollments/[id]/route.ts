@@ -31,9 +31,11 @@ import {
   type EventoDeEnrollment,
   type NoDoDossie,
 } from "@/lib/followup/eventos-legiveis";
+import { carregaEtapasCitadas, nomesDasEtapas } from "@/lib/followup/etapas-citadas";
 import { leituraDoPlano, type TimingPlan } from "@/lib/followup/plano-de-tempo";
 import { flowGraphSchema } from "@/lib/followup/graph-schema";
 import { createClient } from "@/lib/supabase/server";
+import { traduzir } from "@/lib/i18n/dicionario";
 
 export const dynamic = "force-dynamic";
 
@@ -41,7 +43,7 @@ const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 /**
  * Teto de eventos lidos. O motor escreve ~1 por passo e para em `MAX_STEPS`
- * (30); reactivity e intervenção manual somam poucos. 500 cobre o pior caso com
+ * (80); reactivity e intervenção manual somam poucos. 500 cobre o pior caso com
  * folga — e o `truncado` abaixo existe para que, se algum dia não cobrir, a tela
  * DIGA que está mostrando um pedaço, em vez de mentir por omissão.
  */
@@ -73,7 +75,11 @@ export interface DossieDoEnrollment {
   max_attempts: number;
   steps_taken: number;
   contact: { id: string; name: string };
-  flow: { pointer_id: string; name: string | null; version_id: string };
+  flow: {
+    pointer_id: string;
+    name: string | null;
+    version_id: string;
+  };
   agent_name: string | null;
   no_atual: NoDoDossie | null;
   nos: NoDoDossie[];
@@ -136,6 +142,7 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
 
   const authz = await requireRole("viewer", { requestId, resource: "followup_enrollments" });
   if (!authz.ok) return authz.response;
+  const t = (texto: string) => traduzir(texto, authz.user.idioma);
   const { org } = authz;
 
   const supabase = await createClient();
@@ -155,7 +162,7 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
     .maybeSingle();
 
   if (error) return fail("internal_error", error.message, 500, { requestId });
-  if (!row) return fail("not_found", "Follow-up não encontrado.", 404, { requestId });
+  if (!row) return fail("not_found", t("Follow-up não encontrado."), 404, { requestId });
 
   const { data: eventos, error: evErr } = await supabase
     .from("followup_enrollment_events")
@@ -181,6 +188,10 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
   const noDeOrigem = grafo?.success
     ? grafo.data.nodes.find((n) => n.id === row.current_node_id)
     : undefined;
+  // A regra de etapa guarda o id; o nome vem do banco. Falha aqui não derruba o
+  // dossiê — a frase só descreve a opção, e cai em "(não encontrada)" sem id.
+  const citadas = await carregaEtapasCitadas(supabase, org.orgId, noDeOrigem ? [noDeOrigem] : []);
+  const nomesDeEtapa = citadas.ok ? nomesDasEtapas(citadas.etapas) : {};
   const saidas = (grafo?.success ? grafo.data.edges : [])
     .filter((e) => e.source === row.current_node_id)
     .sort((a, b) => b.priority - a.priority)
@@ -188,7 +199,7 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
       edge_id: e.id,
       target_id: e.target,
       target_rotulo: porId.get(e.target)?.rotulo ?? e.target,
-      quando: rotuloDaAresta(e, noDeOrigem),
+      quando: rotuloDaAresta(e, noDeOrigem, nomesDeEtapa),
     }));
 
   const contato = embedded(
@@ -197,7 +208,12 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
       | Array<{ id: string; name: string | null; display_name: string | null; phone_number: string | null }>
       | null,
   );
-  const pointer = embedded(row.followup_flow_pointers as { name: string } | { name: string }[] | null);
+  const pointer = embedded(
+    row.followup_flow_pointers as
+      | { name: string }
+      | { name: string }[]
+      | null,
+  );
   const agente = embedded(row.ai_agents as { name: string } | { name: string }[] | null);
 
   const dossie: DossieDoEnrollment = {
@@ -220,7 +236,11 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
       id: row.contact_id,
       name: contato ? rotuloDoContato(contato) : "Contato removido",
     },
-    flow: { pointer_id: row.pointer_id, name: pointer?.name ?? null, version_id: row.version_id },
+    flow: {
+      pointer_id: row.pointer_id,
+      name: pointer?.name ?? null,
+      version_id: row.version_id,
+    },
     agent_name: agente?.name ?? null,
     no_atual: porId.get(row.current_node_id) ?? null,
     nos,

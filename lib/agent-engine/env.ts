@@ -80,6 +80,12 @@ const envSchema = z.object({
   WATCHDOG_REDRIVE_MIN_AGE_MS: z.coerce.number().int().positive().default(30_000),
   WATCHDOG_REDRIVE_BATCH_SIZE: z.coerce.number().int().positive().default(10),
   WATCHDOG_REDRIVE_SPACING_MS: z.coerce.number().int().positive().default(4_000),
+  // Ponte de eventos WaCalls (spec 18) — chamada de voz, opt-in por org. Sem
+  // WACALLS_API_BASE_URL a ponte fica OFF (warn), mesmo princípio do watchdog
+  // WAHA acima.
+  WACALLS_API_BASE_URL: z.string().url().optional(),
+  WACALLS_API_TOKEN: z.string().trim().min(1).optional(),
+  WACALLS_BRIDGE_MAX_BACKOFF_MS: z.coerce.number().int().positive().default(30_000),
   // Dono ÚNICO dos eventos ai_agent.dispatch_requested (mesma chave do app):
   // 'engine' (default) = o drain deste worker consome; 'native' = o dispatcher
   // EPIC-13 consome e o drain daqui NÃO liga. Nunca os dois.
@@ -109,6 +115,14 @@ const envSchema = z.object({
   CRM_DRAIN_IDLE_INTERVAL_MS: z.coerce.number().int().positive().default(15_000),
   // Evento 'processing' órfão (crash do worker) volta a 'pending' após isto.
   CRM_EVENT_REAP_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
+  // Drain dos HANDLERS do event_log (mídia, branding, follow-up…), à parte do
+  // CRM_DRAIN_* acima: aquele é o dispatch do agente e fala Postgres direto;
+  // este roda os handlers de `register-handlers.ts` pelo admin client.
+  // Até 2026-08-25 este laço não existia e os handlers só rodavam pelo cron
+  // `event-log-drain` (1×/min) — ver o cabeçalho de lib/event-log/drain-loop.ts.
+  EVENT_LOG_DRAIN_INTERVAL_MS: z.coerce.number().int().positive().default(2_000),
+  EVENT_LOG_DRAIN_IDLE_INTERVAL_MS: z.coerce.number().int().positive().default(10_000),
+  EVENT_LOG_DRAIN_BATCH_SIZE: z.coerce.number().int().positive().default(50),
   // Coalescência de rajada inbound: mensagens do MESMO contato dentro desta
   // janela viram UM job (responder em rajada é gatilho de ban). 0 = sem debounce.
   INBOUND_DEBOUNCE_MS: z.coerce.number().int().min(0).default(8_000),
@@ -127,6 +141,13 @@ const envSchema = z.object({
   FOLLOWUP_MAX_AHEAD_MS: z.coerce.number().int().positive().default(RETORNO_MAX_AHEAD_MS_PADRAO),
   // TTL do prefixo estável de prompt cache (doutrina: 1h).
   LLM_CACHE_TTL: z.enum(['5m', '1h']).default('1h'),
+  // Raciocínio (thinking) da DeepSeek. O provedor LIGA por default, e o token
+  // de raciocínio entra na conta como SAÍDA — medido em produção: o turno do
+  // agente gastou ~8× a saída do OpenAI e +22 s de latência, o que anulou o
+  // desconto de preço. 'provider' (default) preserva o default do provedor;
+  // 'disabled' injeta o desligamento no corpo das chamadas — e SÓ nas da
+  // DeepSeek (a fábrica é dela; ver providers.ts).
+  DEEPSEEK_THINKING: z.enum(['provider', 'disabled']).default('provider'),
   // Payload curado da tool get_lead_context.
   LEAD_CONTEXT_HISTORY_LIMIT: z.coerce.number().int().positive().default(20),
   LEAD_CONTEXT_MAX_TOKENS: z.coerce.number().int().positive().default(1_000),
@@ -190,6 +211,12 @@ const envSchema = z.object({
   FLYWHEEL_BATCH_LIMIT: z.coerce.number().int().positive().default(10),
   // Contenção de egress — hosts EXTRA além do Supabase/WAHA (CSV). Fail-closed.
   EGRESS_EXTRA_ALLOWED_HOSTS: z.string().optional(),
+  // Elegibilidade da IA (gate opt-in `channel_sessions.metadata.ai_gate=allowlist`):
+  // janela de validade da autorização de um contato. Fora dela, submissão antiga
+  // não reativa a IA; o turno autorizado renova o carimbo enquanto a conversa
+  // está viva. Só tem efeito nos canais com o gate ligado — canal 'open' (o
+  // default) nunca consulta autorização.
+  AI_ALLOWLIST_TTL_DAYS: z.coerce.number().int().positive().default(21),
 });
 
 export type Env = z.infer<typeof envSchema>;

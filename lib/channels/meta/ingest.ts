@@ -23,8 +23,18 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { estamparAtribuicaoDoContato } from "@/lib/leads/atribuicao-de-anuncio";
+import {
+  ehNumeroInternoDeAviso,
+  registrarMensagemIgnorada,
+} from "@/lib/escalacao/numero-interno-de-aviso";
+
 import { ARCHIVED_AT, queryTolerantToMissingArchived } from "../archived";
-import { phoneLookupVariants } from "../phone-variants";
+import { extrairAtribuicaoMeta } from "../atribuicao-de-anuncio-oficial";
+import { aplicarEfeitosPosEntrada } from "../pos-entrada";
+import { encontrarContatoPorTelefone } from "../contato-por-telefone";
+import { marcarConversaComMensagem } from "../marcar-conversa";
+import { canonicalPhoneBR, phoneLookupVariants } from "../phone-variants";
 import type { ChannelTenantScope } from "../types";
 import type { InboundMessageEvent } from "./webhook";
 
@@ -34,6 +44,21 @@ export type IngestOutcome =
   | { status: "ingested"; messageId: string; conversationId: string }
   | { status: "duplicate" }
   | { status: "no_session" }
+  /**
+   * Recusa DELIBERADA, e por isso um status próprio.
+   *
+   * `duplicate` diria "já ingerimos esta" e `failed` diria "tentamos e não deu"
+   * — as duas são mentiras sobre o que aconteceu, e as duas mandam quem lê o log
+   * procurar no lugar errado. Hoje o único motivo é `numero_interno_de_aviso`:
+   * a mensagem veio do número que a própria equipe usa para receber os avisos de
+   * atendimento, e por desenho nada que venha dele vira contato, conversa ou
+   * despacho do agente. O `reason` existe para o próximo motivo não precisar de
+   * um status novo.
+   *
+   * O chamador (a rota do webhook) só ramifica em `failed`/`no_session`, então
+   * este valor entra sem mexer em decisão nenhuma lá.
+   */
+  | { status: "ignored"; reason: string }
   | { status: "failed"; reason: string };
 
 /**
@@ -86,24 +111,21 @@ async function sessionByPhoneNumberId(
 
 /**
  * Contato já existente sob QUALQUER variante do número. Só depois de não achar é que
- * deixamos o upsert criar — assim o cadastro nasce uma vez só, e o número gravado
- * continua sendo o que já estava lá (não sobrescrevemos o formato de ninguém).
+ * deixamos o upsert criar — assim o cadastro nasce uma vez só.
+ */
+/**
+ * Delega para `encontrarContatoPorTelefone`, que decide QUAL grafia vence.
+ *
+ * Era uma cópia local com `.in(variantes).limit(1)` — sem `order by`, e sem o
+ * filtro de contato fundido. Três funções idênticas viviam assim no repo; a
+ * regra agora mora num lugar só.
  */
 async function findContactByVariants(
   admin: Admin,
   orgId: string,
   waId: string,
 ): Promise<{ id: string; phone_number: string } | null> {
-  const variantes = phoneLookupVariants(waId);
-  if (variantes.length === 0) return null;
-  const { data } = await admin
-    .from("contacts")
-    .select("id, phone_number")
-    .eq("organization_id", orgId)
-    .in("phone_number", variantes)
-    .limit(1)
-    .maybeSingle();
-  return data ?? null;
+  return encontrarContatoPorTelefone(admin as never, orgId, waId);
 }
 
 /** Prévia curta para a lista de conversas. Mídia vira rótulo, nunca URL. */
@@ -136,10 +158,32 @@ export async function ingestMetaInbound(
 
   const orgId = sessao.organization_id;
 
+  // ── O NÚMERO INTERNO DE AVISOS NÃO VIRA ATENDIMENTO ─────────────────────
+  //
+  // Antes do upsert do contato, que é o que importa: é o nascimento da conversa
+  // que dispara o pedido de rodízio pelo banco. O identificador aqui chega só em
+  // dígitos (`wa_id`), e o `+` é o que a comparação por variantes do nono dígito
+  // espera — quem casa é a mesma regra dos outros dois ingestores.
+  if (
+    await ehNumeroInternoDeAviso(admin, orgId, {
+      kind: "phone",
+      phone: `+${e.from.replace(/\D/g, "")}`,
+      lid: null,
+    })
+  ) {
+    await registrarMensagemIgnorada(admin, orgId, {
+      direction: "inbound",
+      sessionId: sessao.id,
+    });
+    return { status: "ignored", reason: "numero_interno_de_aviso" };
+  }
+
   const existente = await findContactByVariants(admin, orgId, e.from);
-  // O upsert recebe o número JÁ EXISTENTE quando há um — é o que impede o contato de
-  // ser recriado sob a outra grafia do nono dígito.
-  const phone = existente?.phone_number ?? `+${e.from.replace(/\D/g, "")}`;
+  // Celular BR grava COM o nono. A busca acima já reencontra a grafia sem o 9;
+  // a RPC promove o cadastro antigo quando ainda está nos 12 dígitos.
+  const phone = existente?.phone_number
+    ? canonicalPhoneBR(existente.phone_number)
+    : canonicalPhoneBR(`+${e.from.replace(/\D/g, "")}`);
 
   const { data: contactId, error: erroContato } = await admin.rpc(
     "fn_upsert_wa_contact" as never,
@@ -155,6 +199,12 @@ export async function ingestMetaInbound(
   if (erroContato || !contactId) {
     return { status: "failed", reason: `contato: ${erroContato?.message ?? "sem id"}` };
   }
+
+  // Clique em anúncio: o `referral` vem na própria mensagem e só nela. Estampar
+  // AQUI, antes de `aplicarEfeitosPosEntrada`, porque é lá que o lead nasce. A
+  // guarda de primeiro toque fica no banco, então a re-entrega não reescreve.
+  const atribuicao = extrairAtribuicaoMeta(e.referral);
+  if (atribuicao) await estamparAtribuicaoDoContato(admin, orgId, contactId as string, atribuicao);
 
   const { data: conversationId, error: erroConversa } = await admin.rpc(
     "fn_upsert_wa_conversation" as never,
@@ -179,6 +229,10 @@ export async function ingestMetaInbound(
       type: e.type === "text" ? "text" : e.type,
       body: e.type === "contact" ? (e.sharedContact?.name ?? e.text) : e.text,
       external_id: e.externalId,
+      // O webhook oficial entrega o media_id, não um arquivo que o browser
+      // consiga abrir. Mantemos um ponteiro opaco para o adapter resolver pela
+      // Graph API; sem ele a bolha nem é renderizada e o worker pula a mídia.
+      media_url: e.media ? `meta-media:${e.media.id}` : null,
       media_mime: e.media?.mime ?? null,
       sent_at: e.sentAt.toISOString(),
       metadata: {
@@ -195,20 +249,56 @@ export async function ingestMetaInbound(
     return { status: "failed", reason: `mensagem: ${erroInsert.message}` };
   }
 
-  // Carimba a conversa — é ISTO que move `last_inbound_at` e abre a janela de 24h.
-  // Falha aqui não derruba a ingestão (a mensagem já entrou), mas o preview e a
-  // janela ficariam desatualizados, então o erro sobe como `failed` parcial no log
-  // do chamador em vez de sumir.
-  await admin.rpc("fn_mark_conversation_message" as never, {
-    p_conv: conversationId as string,
-    p_direction: "inbound",
-    p_preview: previewOf(e),
-    p_at: e.sentAt.toISOString(),
-  } as never);
+  // Carimba a conversa — é ISTO que move `last_message_at`, `last_inbound_at` e
+  // abre a janela de 24h. Falha aqui não derruba a ingestão (a mensagem já
+  // entrou), mas a prévia, a ordenação da Inbox e a janela ficariam paradas.
+  //
+  // ⚠️ O RETORNO ERA IGNORADO, e o comentário que estava aqui afirmava o
+  // contrário — "o erro sobe como `failed` parcial no log do chamador em vez de
+  // sumir". Sumia: era um `await` sem destino para o `{ error }`. O canal
+  // oficial era o pior dos três justamente onde a falha dói mais, porque é ele
+  // que tem janela de 24h — e conversa sem carimbo é janela que ninguém vê
+  // fechar. Quem decide o que fazer com a falha agora é uma função só.
+  await marcarConversaComMensagem(admin, {
+    organizationId: orgId,
+    conversationId: conversationId as string,
+    direction: "inbound",
+    preview: previewOf(e),
+    at: e.sentAt.toISOString(),
+    canal: "meta",
+  });
+
+  const messageId = (inserida as { id: string } | null)?.id ?? "";
+  if (e.media && messageId) {
+    const { error: erroPersistencia } = await admin.rpc("emit_event" as never, {
+      p_event_type: "media.persist_requested",
+      p_entity_kind: "message",
+      p_entity_id: messageId,
+      p_payload: { message_id: messageId, conversation_id: conversationId as string },
+      p_metadata: { source: "meta_webhook" },
+      p_organization_id: orgId,
+    } as never);
+    if (erroPersistencia) {
+      console.error(
+        "[meta.ingest] emit media.persist_requested failed",
+        erroPersistencia.message,
+      );
+    }
+  }
+  await aplicarEfeitosPosEntrada(admin, {
+    organizationId: orgId,
+    contactId: contactId as string,
+    conversationId: conversationId as string,
+    messageId: messageId || null,
+    channelSessionId: sessao.id,
+    texto: e.text ?? null,
+    nomeDoContato: e.profileName ?? null,
+    origem: "meta_webhook",
+  });
 
   return {
     status: "ingested",
-    messageId: (inserida as { id: string } | null)?.id ?? "",
+    messageId,
     conversationId: conversationId as string,
   };
 }

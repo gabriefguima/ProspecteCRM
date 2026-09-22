@@ -2,12 +2,11 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { apiClient } from "@/lib/api/client";
+import type { RodadaDoBanco } from "@/lib/system/update-run";
 
 export interface SystemVersion {
   current_version: string;
   is_owner: boolean;
-  /** `false` quando `UPDATE_CHECK_ENABLED=false` no `.env` do host. */
-  update_check_enabled?: boolean;
   latest_version?: string;
   update_available?: boolean;
   off_release?: boolean;
@@ -16,17 +15,43 @@ export interface SystemVersion {
   /** O host já viu ao menos uma tag `v*` publicada neste repositório. */
   has_known_release?: boolean;
   agent_online?: boolean;
-  notes?: { body: string; requires_attention: string | null } | null;
+  /**
+   * A atualização terminou bem e o host ainda não confirmou (janela de até 5
+   * min). Fora dela é `false` — o campo se fecha sozinho.
+   */
+  just_updated?: boolean;
+  notes?: {
+    /** Um por versão da faixa que tem aviso, do mais novo ao mais antigo. */
+    requires_attention: Array<{ version: string; texto: string }>;
+    /** Todas as seções entre a versão no ar e a alvo, da mais nova à mais antiga. */
+    sections: Array<{ version: string; body: string }>;
+    /** `false`: o texto recebido pode não alcançar a versão instalada. */
+    complete: boolean;
+  } | null;
   run?: {
     id: string;
     status: string;
     last_step: string | null;
+    /** Quando o pedido foi registrado — a tela conta o tempo a partir daqui. */
+    dispatched_at?: string;
     /** Versão que estava instalada quando o run começou. */
     from_version: string;
     /** Versão que o run tentou instalar. */
     to_version: string;
     /** Últimas linhas da saída do update.sh — o diagnóstico da falha. */
     log_tail: string;
+    /**
+     * A falha deste run já foi superada por um deploy posterior (o host reporta
+     * uma versão que o run não descreve). A tela deixa de mostrar o aviso dela.
+     */
+    superseded?: boolean;
+    /**
+     * O que a rodada contou sobre o banco — se a base estava ocupada (disputa),
+     * quantas retentativas custou e em qual passada fechou. Vem da linha do run;
+     * ausente quando ninguém mediu (rodada que não passou pelo banco), e a tela
+     * fica calada nesse caso em vez de afirmar zero.
+     */
+    rodada_do_banco?: RodadaDoBanco | null;
   } | null;
 }
 

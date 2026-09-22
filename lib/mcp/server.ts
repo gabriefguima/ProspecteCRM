@@ -10,11 +10,13 @@
  *     MCP fica no metadata, nao no JSON-RPC error envelope).
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { z } from "zod";
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { auditMcpToolCall } from "./audit";
 import { ensureRole, ensureScope, type McpAuthResult } from "./auth";
 import { allTools } from "./tools";
+import { higienizarUuidsDeAterro } from "./uuid-de-aterro";
 import type { McpContext } from "./types";
 
 const SERVER_NAME = "deskcomm-crm";
@@ -47,7 +49,17 @@ export function createMcpServer(auth: McpAuthResult, requestId: string): McpServ
       },
       async (rawArgs) => {
         const startedAt = Date.now();
-        const args = (rawArgs ?? {}) as Record<string, unknown>;
+        // A MESMA higiene do outro ingresso (`lib/ai/runtime/tools.ts`), pela
+        // mesma razão: um uuid de aterro em campo opcional vira filtro por um
+        // id que não existe, e o resultado vazio é lido como "não há". Aqui é o
+        // caminho do MCP externo; lá é o do agente. Os dois entram no mesmo
+        // handler, então os dois higienizam — deixar um de fora seria fechar a
+        // porta e esquecer a janela. Ver `lib/mcp/uuid-de-aterro.ts`.
+        const higiene = higienizarUuidsDeAterro(
+          tool.inputSchema as Record<string, z.ZodTypeAny>,
+          (rawArgs ?? {}) as Record<string, unknown>,
+        );
+        const args = higiene.limpos;
         const ctx: McpContext = {
           organizationId: auth.organizationId,
           role: auth.role,
@@ -63,14 +75,21 @@ export function createMcpServer(auth: McpAuthResult, requestId: string): McpServ
 
           const result = await tool.handler(args as never, ctx);
           const durationMs = Date.now() - startedAt;
+          // Mesma regra do ingresso do agente (`lib/ai/runtime/tools.ts`, #484):
+          // o vazio que a tool declara não é sucesso. Sem isto, a mesma busca
+          // sem achado era `success: true` por aqui e `false` por lá.
+          const motivoDoVazio = tool.motivoDoVazio?.(result) ?? null;
 
           await auditMcpToolCall({
             ctx,
             toolName: tool.name,
             args,
             durationMs,
-            success: true,
+            success: motivoDoVazio === null,
             resultSummary: summarizeResult(result),
+            ...(motivoDoVazio === null
+              ? {}
+              : { desfecho: "sem_resultado" as const, motivo: motivoDoVazio }),
           });
 
           return {

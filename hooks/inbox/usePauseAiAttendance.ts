@@ -9,25 +9,35 @@ interface PauseArgs {
 }
 
 interface PauseResponse {
-  data: { paused: boolean; already_paused: boolean };
+  data: { paused: boolean; assumiu_ao_pausar: boolean };
 }
 
 /**
- * Pausa o atendimento automático manualmente — a irmã de `useResumeAiAttendance`.
- * Grava `contacts.force_human = true` (lib/escalacao/pausar.ts): o agente não
- * responde mais nessa conversa, mesmo que o contato escreva de novo, até
- * alguém devolver pelo botão "Devolver ao automático".
+ * Pausa o atendimento automático nesta conversa — o lado que faltava do par.
+ *
+ * `useResumeAiAttendance` existia sozinho: a tela sabia LIGAR o automático de
+ * volta e não sabia desligá-lo. Ele só calava por efeito colateral (o agente
+ * escalando, ou a janela de 5 minutos que um envio manual abre), então a pessoa
+ * não tinha como dizer "daqui eu cuido" sem mandar uma mensagem primeiro.
+ *
+ * Invalida as CONTAGENS junto: pausar move a conversa entre abas (sem dono →
+ * minhas), e um badge que conta o que a aba não mostra manda o atendente procurar
+ * trabalho que não existe.
  */
 export function usePauseAiAttendance() {
   const qc = useQueryClient();
 
   return useMutation({
     mutationFn: async (args: PauseArgs) =>
-      apiClient.post<PauseResponse>(`/api/v1/conversations/${args.conversation_id}/pause-bot`, {}),
+      apiClient.post<PauseResponse>(
+        `/api/v1/conversations/${args.conversation_id}/pause-ai`,
+        {},
+      ),
     onError: (err) => showApiError(err),
     onSuccess: (_data, args) => {
       qc.invalidateQueries({ queryKey: ["conversations"] });
       qc.invalidateQueries({ queryKey: ["conversation", args.conversation_id] });
+      qc.invalidateQueries({ queryKey: ["conversation-counts"] });
     },
   });
 }

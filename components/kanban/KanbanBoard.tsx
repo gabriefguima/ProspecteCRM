@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DragDropContext, type DropResult } from "@hello-pangea/dnd";
+import { useT } from "@/hooks/i18n/useT";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useBoard } from "@/hooks/kanban/useBoard";
@@ -8,12 +9,12 @@ import { useMoveCard } from "@/hooks/kanban/useMoveCard";
 import { useAssignableMembers } from "@/hooks/inbox/useAssignableMembers";
 import { useAtRiskLeads } from "@/hooks/leads/useAtRiskLeads";
 import { useReactivations } from "@/hooks/leads/useReactivations";
-import { useSelection } from "@/hooks/selection/useSelection";
 import { midpoint } from "@/lib/kanban/fractional-indexing";
 import type { Lead } from "@/lib/types/leads";
 import type { Pipeline, Stage } from "@/lib/kanban/types";
 import { StageColumn } from "./StageColumn";
 import { LeadDossier } from "./LeadDossier";
+import { camposDoFunil } from "@/lib/leads/campos-do-funil";
 
 interface KanbanBoardProps {
   pipelineId: string;
@@ -31,14 +32,9 @@ interface KanbanBoardProps {
    * certo e morre na fronteira: o dado vem por prop e o sinal ficava para trás.
    */
   pulses?: Map<string, number>;
-  /** Marca/desmarca um único lead — mesma assinatura de `useSelection().toggle`. */
-  onToggle?: (leadId: string) => void;
-  /**
-   * Controla se os checkboxes aparecem nos cards. Sem controle externo, cai
-   * no `isActive` da seleção interna (ativa via Ctrl+click ou nunca, já que
-   * não há botão "Selecionar" para o modo desacoplado/não-controlado).
-   */
-  selectionMode?: boolean;
+  onSelectionChange?: (ids: string[]) => void;
+  /** Lead a abrir já na montagem (deep link `?lead=` — ver o dossiê abaixo). */
+  leadInicial?: string | null;
 }
 
 function groupLeadsByStage(stages: Stage[], leads: Lead[]): Map<string, Lead[]> {
@@ -61,7 +57,7 @@ function BoardSkeleton() {
       {[0, 1, 2].map((c) => (
         <div
           key={c}
-          className="flex w-80 shrink-0 flex-col gap-2 rounded-lg border border-border bg-surface-muted/40 p-3"
+          className="bg-surface-muted/40 flex w-80 shrink-0 flex-col gap-2 rounded-lg border border-border p-3"
         >
           <Skeleton className="h-5 w-32" />
           {[0, 1, 2, 3].map((i) => (
@@ -80,9 +76,10 @@ export function KanbanBoard({
   pipeline: pipelineProp,
   selectedIds,
   pulses: pulsesProp,
-  onToggle,
-  selectionMode: selectionModeProp,
+  onSelectionChange,
+  leadInicial,
 }: KanbanBoardProps) {
+  const t = useT();
   const useExternal = stagesProp !== undefined && leadsProp !== undefined;
   const queryResult = useBoard(useExternal ? null : pipelineId);
   const moveCard = useMoveCard(pipelineId);
@@ -122,22 +119,18 @@ export function KanbanBoard({
 
   // O dossiê é do BOARD e não da página: ele precisa do lead inteiro e do nome
   // do estágio, que só existem aqui depois do agrupamento.
-  const [dossieId, setDossieId] = useState<string | null>(null);
-  const internalSelection = useSelection();
+  //
+  // `leadInicial` é o deep link: até aqui o dossiê SÓ abria por clique, então
+  // nenhuma outra tela do produto conseguia apontar para um lead específico —
+  // o histórico de captação tinha o id e nenhum lugar para levá-lo. Uma vez
+  // aberto, o estado local manda (fechar não reabre pela URL).
+  const [dossieId, setDossieId] = useState<string | null>(leadInicial ?? null);
+  const [internalSelected, setInternalSelected] = useState<Set<string>>(new Set());
 
-  // Arrastar o FUNDO do board rola horizontalmente entre pipelines/estágios,
-  // como no Trello — antes só dava pra rolar pela scrollbar ou gesto de
-  // trackpad. `panState` é ref (não state): a cada pixel de mousemove
-  // re-renderizar o board inteiro seria caro à toa, e nada aqui precisa
-  // disparar render — só mexe em `scrollLeft` e no cursor do documento.
   const scrollRef = useRef<HTMLDivElement>(null);
   const panState = useRef<{ startX: number; startScrollLeft: number; dragging: boolean } | null>(
     null,
   );
-  // Guarda o cleanup do arrasto em curso pro efeito de desmontagem conseguir
-  // chamá-lo — sem isto, navegar pra outra tela NO MEIO do pan (solta o botão
-  // já em outra rota) deixava os listeners da window pendurados e o cursor
-  // travado em "grabbing" pro resto da sessão.
   const panCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -145,14 +138,10 @@ export function KanbanBoard({
   }, []);
 
   const onBoardMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return; // só botão esquerdo do mouse
+    if (e.button !== 0) return;
     const container = scrollRef.current;
     if (!container) return;
 
-    // Não inicia o pan em cima de um card (nem de nada clicável dentro dele) —
-    // o @hello-pangea/dnd já escuta mousedown no handle do card pra arrastar
-    // ELE; os dois gestos brigariam pelo mesmo clique. `closest` sobe até o
-    // ancestral que carrega o atributo que a lib marca no handle.
     const target = e.target as HTMLElement;
     if (
       target.closest(
@@ -162,16 +151,17 @@ export function KanbanBoard({
       return;
     }
 
-    e.preventDefault(); // barra a seleção de texto nativa desde o primeiro pixel
-    panState.current = { startX: e.clientX, startScrollLeft: container.scrollLeft, dragging: false };
+    e.preventDefault();
+    panState.current = {
+      startX: e.clientX,
+      startScrollLeft: container.scrollLeft,
+      dragging: false,
+    };
 
     const onMouseMove = (ev: MouseEvent) => {
       const state = panState.current;
       if (!state) return;
       const delta = ev.clientX - state.startX;
-      // Só vira "arrasto" depois de um limiar pequeno — um clique simples no
-      // fundo (sem soltar o mouse no mesmo lugar) não deve mudar o cursor nem
-      // mexer no scroll por 1px de tremor da mão.
       if (!state.dragging) {
         if (Math.abs(delta) < 4) return;
         state.dragging = true;
@@ -194,10 +184,9 @@ export function KanbanBoard({
     window.addEventListener("mouseup", onMouseUp);
   }, []);
   const selectedLeadIds = useMemo(
-    () => (selectedIds ? new Set(selectedIds) : new Set(internalSelection.selectedIds)),
-    [selectedIds, internalSelection.selectedIds],
+    () => (selectedIds ? new Set(selectedIds) : internalSelected),
+    [selectedIds, internalSelected],
   );
-  const selectionMode = selectionModeProp ?? internalSelection.isActive;
 
   const data = useExternal
     ? {
@@ -210,24 +199,34 @@ export function KanbanBoard({
   const isError = useExternal ? false : queryResult.isError;
   const error = useExternal ? null : queryResult.error;
 
-  const leadDoDossie = dossieId
-    ? (data?.leads.find((l) => l.id === dossieId) ?? null)
-    : null;
+  const leadDoDossie = dossieId ? (data?.leads.find((l) => l.id === dossieId) ?? null) : null;
 
   const grouped = useMemo(() => {
     if (!data) return null;
     return groupLeadsByStage(data.stages, data.leads);
   }, [data]);
 
-  const handleSelect = useCallback(
-    (leadId: string) => {
-      if (onToggle) {
-        onToggle(leadId);
+  // Um conjunto por vez, e não um card por vez: o board recebe o resultado do
+  // gesto já resolvido pela coluna (um card, um intervalo, a etapa inteira). A
+  // versão anterior só sabia alternar UM id, e é por isso que "selecionar tudo"
+  // não existia — cada card exigia uma volta pelo estado.
+  const handleSelectMany = useCallback(
+    (leadIds: string[], marcar: boolean) => {
+      const apply = (prev: Set<string>): Set<string> => {
+        const next = new Set(prev);
+        for (const id of leadIds) {
+          if (marcar) next.add(id);
+          else next.delete(id);
+        }
+        return next;
+      };
+      if (onSelectionChange) {
+        onSelectionChange(Array.from(apply(selectedLeadIds)));
       } else {
-        internalSelection.toggle(leadId);
+        setInternalSelected((prev) => apply(prev));
       }
     },
-    [onToggle, internalSelection],
+    [onSelectionChange, selectedLeadIds],
   );
 
   const handleDragEnd = useCallback(
@@ -235,10 +234,7 @@ export function KanbanBoard({
       if (!data || !grouped) return;
       const { source, destination, draggableId } = result;
       if (!destination) return;
-      if (
-        source.droppableId === destination.droppableId &&
-        source.index === destination.index
-      ) {
+      if (source.droppableId === destination.droppableId && source.index === destination.index) {
         return;
       }
 
@@ -246,13 +242,10 @@ export function KanbanBoard({
       if (!lead) return;
 
       const destStageId = destination.droppableId;
-      const destList = (grouped.get(destStageId) ?? []).filter(
-        (l) => l.id !== draggableId,
-      );
+      const destList = (grouped.get(destStageId) ?? []).filter((l) => l.id !== draggableId);
 
       const before = destination.index > 0 ? destList[destination.index - 1] : null;
-      const after =
-        destination.index < destList.length ? destList[destination.index] : null;
+      const after = destination.index < destList.length ? destList[destination.index] : null;
 
       const newPosition = midpoint(
         before?.position_in_stage ?? null,
@@ -281,7 +274,7 @@ export function KanbanBoard({
   if (isError) {
     return (
       <Card className="m-4 p-6 text-sm text-text-muted">
-        Falha ao carregar o board.
+        {t("Falha ao carregar o board.")}
         {error instanceof Error ? ` ${error.message}` : null}
       </Card>
     );
@@ -294,7 +287,7 @@ export function KanbanBoard({
   if (data.stages.length === 0) {
     return (
       <Card className="m-4 p-6 text-sm text-text-muted">
-        Nenhum lead nesta pipeline ainda.
+        {t("Nenhum lead nesta pipeline ainda.")}
       </Card>
     );
   }
@@ -303,6 +296,7 @@ export function KanbanBoard({
     <DragDropContext onDragEnd={handleDragEnd}>
       <div
         ref={scrollRef}
+        data-testid="kanban-board"
         onMouseDown={onBoardMouseDown}
         className="flex h-full cursor-grab gap-3 overflow-x-auto p-4"
       >
@@ -318,8 +312,7 @@ export function KanbanBoard({
             pulses={pulsesProp ?? queryResult.pulses}
             canonicalTags={canonicalTags}
             selectedLeadIds={selectedLeadIds}
-            selectionMode={selectionMode}
-            onSelect={handleSelect}
+            onSelectMany={handleSelectMany}
             onOpen={setDossieId}
           />
         ))}
@@ -327,12 +320,11 @@ export function KanbanBoard({
       {leadDoDossie && (
         <LeadDossier
           open
-          onOpenChange={(v) => !v && setDossieId(null)}
+          onOpenChange={(v: boolean) => !v && setDossieId(null)}
           lead={leadDoDossie}
           pipelineId={pipelineId}
-          stageName={
-            data.stages.find((s) => s.id === leadDoDossie.stage_id)?.name ?? "—"
-          }
+          fieldDefs={camposDoFunil(data.pipeline.settings ?? null)}
+          stageName={data.stages.find((s) => s.id === leadDoDossie.stage_id)?.name ?? "—"}
           ownerNames={ownerNames}
         />
       )}

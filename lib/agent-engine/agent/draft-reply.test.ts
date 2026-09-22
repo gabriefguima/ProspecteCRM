@@ -42,6 +42,7 @@ const AGENT: PublishedAgentConfig = {
   multimodalInput: false,
   casesEnabled: false,
   toolIds: [],
+  knowledgeSourceIds: [],
   activeKbVersionId: null,
   ragTopK: 5,
   ragSimilarityThreshold: 0.72,

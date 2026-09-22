@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # gov-loop G1-02 — baseline install+update gate + RLS isolation invariants.
 #
-# Sobe um Postgres efêmero (pgvector/pgvector:pg17), aplica supabase/baseline.sql
+# Sobe um Postgres efêmero (`pgvector/pgvector`, na major do PISO por padrão —
+# quem quiser outra passa `TEST_DB_IMAGE`, e é assim que a matriz do job
+# `invariants` roda pg15 e pg17), aplica supabase/baseline.sql
 # em modo install e depois em modo update — as DUAS passadas com ON_ERROR_STOP=1,
 # que é o que torna a segunda uma prova de idempotência e não só um "terminou"
 # (issue #184) — e roda a suíte vitest de invariantes (tests/invariants/**)
@@ -11,10 +13,69 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# ⛔ O `vitest` TEM DE EXISTIR, e a conferência vem ANTES de subir o container.
+#
+# Medido em 2026-09-20: rodar `bash scripts/test-db.sh <arquivo>` (em vez de
+# `pnpm test:db <arquivo>`) sai com **exit 127** e um log que parece sucesso — o
+# container sobe, o baseline aplica em install E update, a saída enche de ✓, e a
+# única linha vermelha é `vitest: comando não encontrado`, perdida no meio.
+# Quem olha o rodapé não acha `Tests N failed` porque a suíte NUNCA RODOU: o
+# instrumento faltou, e a ausência dele se parece com "rodou e passou".
+#
+# É a mesma classe de "instrumento quebrado devolve zero". O `pnpm` põe
+# `node_modules/.bin` no PATH; um `bash` direto não. A guarda não conserta o
+# caminho de propósito — ela RECUSA, dizendo qual comando usar, porque adivinhar
+# o gerenciador de pacotes de quem chamou seria outro palpite.
+#
+# Antes do container: a recusa custa milissegundos em vez de um ciclo inteiro de
+# subida e teardown.
+if ! command -v vitest >/dev/null 2>&1; then
+  echo "ERRO: \`vitest\` não está no PATH — a suíte de invariantes não rodaria." >&2
+  echo "      Use \`pnpm test:db\` (ele põe node_modules/.bin no PATH)." >&2
+  echo "      Você chamou: $0 $*" >&2
+  exit 1
+fi
 BASELINE="$ROOT/supabase/baseline.sql"
-PORT="${TEST_DB_PORT:-54329}"
+# A PORTA: quem PEDE escolhe; quem não pede deixa o Docker escolher.
+#
+# Antes era 54329 fixo, e duas sessões rodando `test:db` ao mesmo tempo colidiam:
+# a segunda morria com `Bind for 127.0.0.1:54329 failed: port is already
+# allocated` e exit 125, ANTES de aplicar o baseline — um vermelho que não fala
+# de schema nenhum. O contorno era combinar `TEST_DB_PORT` a mão entre as
+# sessões, o que é disciplina onde devia ser mecanismo.
+#
+# Procurar uma porta livre e depois pedi-la teria uma corrida entre o "está
+# livre" e o "me dá": duas sessões podem ver a mesma porta livre no mesmo
+# instante. Publicar em `127.0.0.1::5432` faz o DAEMON alocar e devolver — não
+# há janela. A porta efetiva é lida depois com `docker port`.
+PORT_PEDIDA="${TEST_DB_PORT:-}"
+PUBLICACAO="127.0.0.1::5432"
+[ -n "$PORT_PEDIDA" ] && PUBLICACAO="127.0.0.1:${PORT_PEDIDA}:5432"
+
+# O NOME não diz de quem é o container. Quando duas sessões precisam limpar "só
+# os seus", a única saída hoje é inferir por porta publicada ou por prefixo de
+# nome — e foi assim que uma limpeza de containers de uma sessão passou por cima
+# dos de outra. Os labels fazem "só os meus" ser uma query:
+#   docker ps --filter label=deskcomm.worktree=$PWD
+DONO_WORKTREE="$ROOT"
+DONO_BRANCH="$(git -C "$ROOT" branch --show-current 2>/dev/null || echo desconhecida)"
 CONTAINER="deskcomm-test-db-$$"
-IMAGE="pgvector/pgvector:pg17"
+# A MAJOR da imagem: quem PEDE escolhe, quem não pede fica no PISO — mesma
+# forma da PORTA acima, e pelo mesmo motivo (mecanismo, não disciplina de quem
+# chama). A matriz do job `invariants` (ci.yml) passa `TEST_DB_IMAGE` para
+# cobrir pg15 E pg17; a máquina de quem só digita `pnpm test:db` continua
+# medindo a versão mais pobre que dizemos suportar.
+#
+# pg15 e não pg17: o piso real do baseline é pg15 (`security_invoker` em view,
+# baseline.sql:1215). O 17 vinha de 9 `GRANT … MAINTAIN` que o `pg_dump` de um
+# projeto Supabase pg17 emitiu sozinho ao serializar o ACL das tabelas
+# append-only — ninguém os escreveu, e nenhum código do projeto usa o
+# privilégio. Testar no piso é o que faz este gate cobrir a instalação mais
+# pobre que dizemos suportar, em vez da mais rica que temos à mão.
+# Quem guarda o PADRÃO (pg15 no default, mesmo com a variável no lugar) é
+# tests/unit/baseline-no-piso-do-postgres.test.ts.
+IMAGE="${TEST_DB_IMAGE:-pgvector/pgvector:pg15}"
 # O baseline é aplicado UMA vez, num banco-MOLDE. Cada ARQUIVO de tests/invariants
 # recebe uma cópia nova dele — `create database postgres template $TEMPLATE`, ~0,2s
 # medidos — feita pelo setupFile declarado em vitest.db.config.ts.
@@ -29,18 +90,77 @@ TEMPLATE="inv_baseline"
 
 [ -f "$BASELINE" ] || { echo "FATAL: $BASELINE não encontrado" >&2; exit 1; }
 
+# O DETECTOR DE ÁRVORE VIVA — o script desconfiando de si mesmo.
+#
+# Esta suíte lê o `baseline.sql` no começo e roda por até ~15 minutos. Se alguém
+# (ou você, noutra janela) editar o baseline ou um invariante NO MEIO da corrida,
+# o veredito do fim não descreve nenhuma árvore que exista: metade dele mediu o
+# arquivo antigo. Já aconteceu — 44 minutos de suíte sobre um baseline que estava
+# sendo reescrito, e a divergência só apareceu depois, comparando mtime a mão.
+#
+# `find -newer` em vez de `stat`: `stat -f %m` (BSD/macOS) e `stat -c %Y` (GNU/CI)
+# têm sintaxes incompatíveis, e um detector que falhe no CI é pior que nenhum.
+# ⚠️ SEM `-t`, e com os X explícitos. O `mktemp -t <prefixo>` do BSD (macOS)
+# aceita template sem `XXXXXX`; o GNU (Linux, que é o runner do CI) recusa com
+# "too few X's in template" e derruba o job em 22 segundos, antes de subir banco
+# nenhum. Verde no meu laptop, vermelho no CI — e a branch nunca tinha passado
+# por CI para a divergência aparecer.
+#
+# Esta forma é idêntica nos dois: caminho completo, seis X, sem depender de como
+# cada `mktemp` interpreta `-t`.
+CARIMBO="$(mktemp "${TMPDIR:-/tmp}/deskcomm-test-db-carimbo.XXXXXX")"
+MEDIDOS=("$BASELINE" "$ROOT/tests/invariants" "$ROOT/scripts/test-db.sh" "$ROOT/vitest.db.config.ts")
+
+arvore_mexeu() {
+  find "${MEDIDOS[@]}" -type f -newer "$CARIMBO" 2>/dev/null | head -20
+}
+
 cleanup() {
   echo "==> teardown: removendo container $CONTAINER"
-  docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  # `-v` REMOVE OS VOLUMES ANÔNIMOS, e sem ele cada rodada vazava ~68 MB.
+  #
+  # A imagem `pgvector/pgvector` — em qualquer das tags que este harness usa,
+  # pg15 ou pg17 — declara `VOLUME /var/lib/postgresql/data` no
+  # Dockerfile (`docker image inspect … .Config.Volumes`), então todo container
+  # criado sem `-v` explícito ganha um volume ANÔNIMO. O `--rm` do `docker run`
+  # cuidaria disso ao término normal, mas quem chega primeiro é este trap, e
+  # `docker rm -f` sem `-v` remove o container e DEIXA o volume.
+  #
+  # Medido, com contagem antes/depois: `docker rm -f` → +1 volume órfão;
+  # `docker rm -fv` → nenhum. Numa máquina de desenvolvimento onde esta suíte
+  # roda dezenas de vezes por dia, isso somou **355 volumes órfãos e 24 GB** —
+  # o suficiente para encher o disco e derrubar o daemon do Docker, que é como
+  # o defeito apareceu (2026-08-25: `No space left on device` em toda escrita,
+  # inclusive a do próprio harness).
+  #
+  # O sintoma não aponta para cá: o disco enche horas depois, e quem paga é a
+  # próxima sessão a rodar qualquer coisa.
+  docker rm -fv "$CONTAINER" >/dev/null 2>&1 || true
+  rm -f "$CARIMBO"
 }
 trap cleanup EXIT
 
-echo "==> subindo $IMAGE como $CONTAINER (porta local $PORT)"
+echo "==> subindo $IMAGE como $CONTAINER (worktree $DONO_WORKTREE, branch $DONO_BRANCH)"
 docker run -d --rm --name "$CONTAINER" \
-  -p "127.0.0.1:${PORT}:5432" \
+  -p "$PUBLICACAO" \
+  --label "deskcomm.harness=test-db" \
+  --label "deskcomm.worktree=$DONO_WORKTREE" \
+  --label "deskcomm.branch=$DONO_BRANCH" \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=postgres \
   "$IMAGE" >/dev/null
+
+# A porta EFETIVA só se sabe depois de o daemon alocar.
+#
+# ⚠️ E ela tem de ser EXPORTADA para o vitest: 49 arquivos de tests/invariants
+# abrem conexão TCP em `process.env.TEST_DB_PORT ?? 54329`. Hoje isso funciona
+# por acidente — a env do shell de quem chamou é herdada. Com a porta escolhida
+# aqui dentro, sem o export os 49 iriam bater na 54329, que é de outra pessoa ou
+# de ninguém.
+PORT="$(docker port "$CONTAINER" 5432/tcp | head -1 | sed 's/.*://')"
+[ -n "$PORT" ] || { echo "FATAL: não consegui ler a porta publicada do container" >&2; exit 1; }
+export TEST_DB_PORT="$PORT"
+echo "    ✓ publicado em 127.0.0.1:$PORT"
 
 # Espera o servidor DEFINITIVO (o initdb sobe um temporário só em socket;
 # testar via TCP 127.0.0.1 evita o falso-ready da fase de init).
@@ -57,6 +177,19 @@ docker exec "$CONTAINER" psql -U postgres -d postgres -q -c "create database $TE
 
 psql_install() {
   docker exec -i "$CONTAINER" psql -U postgres -d "$TEMPLATE" -v ON_ERROR_STOP=1 -q -f - "$@"
+}
+
+# Toda aplicação do baseline deixa UMA linha em `test_db.aplicacoes_do_baseline`,
+# no próprio molde. Com isso um invariante PROVA quantas aplicações o banco que ele
+# lê recebeu, em vez de confiar na posição das linhas deste script.
+aplicar_baseline() {
+  psql_install < "$BASELINE"
+  psql_install <<'SQL'
+set client_min_messages = warning;
+create schema if not exists test_db;
+create table if not exists test_db.aplicacoes_do_baseline (aplicada_em timestamptz not null default clock_timestamp());
+insert into test_db.aplicacoes_do_baseline default values;
+SQL
 }
 
 echo "==> prelude: stubs mínimos do Supabase (roles, auth.uid(), extensions)"
@@ -113,6 +246,33 @@ alter default privileges for role postgres in schema public grant all on functio
 alter default privileges for role postgres in schema public grant all on functions to service_role;
 alter default privileges for role postgres in schema public revoke execute on functions from public;
 
+-- O MESMO DEFAULT ACL, PARA TABELAS (issue #887).
+--
+-- O bloco acima cobria só funções, e o gate ficava cego para privilégio das
+-- tabelas do CORPO do dump. Num Supabase de verdade toda tabela criada em
+-- `public` nasce com privilégio total para anon, authenticated e service_role, e
+-- o `GRANT` que o dump enumera depois só ACRESCENTA — não revoga nada. Aqui, sem
+-- estas linhas, a tabela do corpo nascia só com o que o dump concede, e um
+-- invariante do tipo "o papel X não tem o privilégio Y na tabela Z" sobre ela
+-- ficava verde por construção. As tabelas do apêndice nunca tiveram o problema:
+-- nascem depois do `ALTER DEFAULT PRIVILEGES … ON TABLES` que o próprio dump grava.
+-- Foi assim que o `service_role` seguia apagando e reescrevendo linhas de
+-- `api_audit_log` com este gate verde, até a migration 0258.
+--
+-- Medido em 2026-09-17 no `pg_default_acl` de um Supabase local
+-- (supabase/postgres:17.6.1.106):
+--
+--     postgres | public | TABLES | {postgres=arwdDxtm,anon=arwdDxtm,
+--                                   authenticated=arwdDxtm,service_role=arwdDxtm}
+--
+-- `grant all` reproduz as duas majors: o `m` (MAINTAIN) só existe no pg17.
+--
+-- `scripts/test-update-com-dados.sh` extrai este bloco inteiro, então as linhas
+-- abaixo valem para os dois scripts.
+alter default privileges for role postgres in schema public grant all on tables to anon;
+alter default privileges for role postgres in schema public grant all on tables to authenticated;
+alter default privileges for role postgres in schema public grant all on tables to service_role;
+
 create schema if not exists auth;
 create schema if not exists extensions;
 
@@ -144,11 +304,28 @@ create table if not exists storage.objects (
 );
 
 -- Stub de auth.users (FKs do baseline apontam pra cá).
+--
+-- `raw_user_meta_data` entrou com a migration 0202 (fn_conversation_assign
+-- passou a ler `raw_user_meta_data->>'full_name'` dentro da definer) — é o
+-- nome real da coluna no GoTrue, não um apelido do stub.
 create table if not exists auth.users (
   id uuid primary key default gen_random_uuid(),
   email text unique,
+  raw_user_meta_data jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
+
+-- Contrato Supabase usado pelo suporte: sessão é do Auth, nunca do produto.
+create table if not exists auth.sessions (
+ id uuid primary key, user_id uuid not null references auth.users(id),
+ aal text, not_after timestamptz
+);
+create table if not exists auth.mfa_factors (
+ id uuid primary key, user_id uuid not null references auth.users(id), status text, factor_type text default 'totp'
+);
+create or replace function auth.jwt() returns jsonb language sql stable as $$
+ select coalesce(nullif(current_setting('request.jwt.claim',true),''),nullif(current_setting('request.jwt.claims',true),''))::jsonb;
+$$;
 
 -- Stub de auth.uid() lendo o claim `sub` de request.jwt.claims (mesmo contrato
 -- do Supabase; os testes simulam o JWT via set_config).
@@ -229,9 +406,55 @@ if [ "$fidelidade" != "t" ]; then
 fi
 echo "    ✓ definer nova nasce com grant direto a anon (armadilha do produto reproduzida)"
 
+# A GÊMEA PARA TABELAS (issue #887), no mesmo instante e pelo mesmo motivo da de
+# funções. O próprio baseline grava um `ALTER DEFAULT PRIVILEGES … ON TABLES`,
+# DEPOIS das tabelas do corpo do dump: uma tabela de sonda criada depois do
+# baseline nasceria certa com ou sem as linhas do prelude. Só antes dele a sonda
+# mede o prelude e nada além. Depois do baseline os dois bancos ainda diferem,
+# mas só nas tabelas do corpo cujo GRANT enumerado omite o privilégio:
+#   grep -nE '^GRANT [A-Z,]+ ON TABLE' supabase/baseline.sql | grep -v 'GRANT ALL'
+#
+# Mede os TRÊS papéis, e não só anon como a sonda de funções: o dano que abriu a
+# issue foi do service_role, e uma sonda que olhasse só anon aprovaria o prelude
+# sem a linha dele. DELETE é o privilégio medido porque é o que apaga linha de
+# tabela append-only.
+fidelidade_tabelas="$(docker exec -i "$CONTAINER" psql -U postgres -d "$TEMPLATE" -v ON_ERROR_STOP=1 -q -tA -f - <<'SQL'
+create table public.sonda_fidelidade_do_harness (id int);
+select count(distinct a.grantee)
+  from pg_class c, aclexplode(c.relacl) a
+ where c.oid = 'public.sonda_fidelidade_do_harness'::regclass
+   and a.privilege_type = 'DELETE'
+   and a.grantee in ('anon'::regrole, 'authenticated'::regrole, 'service_role'::regrole);
+drop table public.sonda_fidelidade_do_harness;
+SQL
+)"
+if [ "$fidelidade_tabelas" != "3" ]; then
+  echo "FATAL: neste banco uma tabela nova em public NÃO nasce com DELETE direto para anon," >&2
+  echo "       authenticated e service_role (achei ${fidelidade_tabelas:-nada} de 3). Num projeto" >&2
+  echo "       Supabase de verdade ela nasce, porque o bootstrap grava um ALTER DEFAULT PRIVILEGES" >&2
+  echo "       … ON TABLES em pg_default_acl antes de qualquer SQL nosso. Sem reproduzir isso," >&2
+  echo "       um invariante que afirme 'o papel X não tem o privilégio Y na tabela Z' sobre uma" >&2
+  echo "       tabela do corpo do dump fica VERDE por construção (issue #887). Restaure as 3 linhas de" >&2
+  echo "       'alter default privileges … on tables' no prelude acima." >&2
+  exit 1
+fi
+echo "    ✓ tabela nova nasce com DELETE direto para anon, authenticated e service_role"
+
 echo "==> modo INSTALL: aplicando baseline.sql com ON_ERROR_STOP=1"
-psql_install < "$BASELINE"
+aplicar_baseline
 echo "    ✓ install ok"
+
+# O MOLDE DE APLICAÇÃO ÚNICA: cópia do banco NESTE instante, antes do UPDATE.
+#
+# O `install.sh` aplica o baseline UMA vez. O molde acima recebe DUAS, e a segunda
+# esconde toda diferença entre instalação nova e atualização: o que a primeira
+# passada deixou de fazer por ordem dentro do arquivo, a segunda faz. Invariante
+# que precisa medir a instalação nova lê `$TEST_DB_TEMPLATE_UMA_APLICACAO` e confere
+# em `test_db.aplicacoes_do_baseline` que ela é de fato de UMA aplicação.
+TEMPLATE_UMA_APLICACAO="inv_baseline_uma_aplicacao"
+docker exec "$CONTAINER" psql -U postgres -d template1 -q -v ON_ERROR_STOP=1 \
+  -c "create database $TEMPLATE_UMA_APLICACAO template $TEMPLATE" >/dev/null
+echo "    ✓ molde de aplicação única: $TEMPLATE_UMA_APLICACAO"
 
 # COM `ON_ERROR_STOP=1`, e é isto que torna o passo uma prova (issue #184).
 #
@@ -244,7 +467,7 @@ echo "    ✓ install ok"
 #
 # A flag é a diferença entre "re-aplicar terminou" e "re-aplicar não errou".
 echo "==> modo UPDATE: re-aplicando baseline.sql COM ON_ERROR_STOP=1 (idempotência de verdade)"
-psql_install < "$BASELINE"
+aplicar_baseline
 echo "    ✓ update ok (zero erro na re-aplicação)"
 
 echo "==> banco \`postgres\` a partir do molde (o setupFile o recria a cada arquivo)"
@@ -265,7 +488,22 @@ echo "==> invariantes: vitest (tests/invariants) — banco novo por ARQUIVO, ord
 # `--sequence.shuffle.files`: com o isolamento por arquivo a ordem deixa de ser
 # variável escondida, e sortear é o que impede a próxima colisão de fixture de
 # ficar dormente até alguém renomear um arquivo.
-TEST_DB_CONTAINER="$CONTAINER" TEST_DB_TEMPLATE="$TEMPLATE" \
+TEST_DB_CONTAINER="$CONTAINER" TEST_DB_TEMPLATE="$TEMPLATE" TEST_DB_PORT="$PORT" \
+  TEST_DB_TEMPLATE_UMA_APLICACAO="$TEMPLATE_UMA_APLICACAO" \
   vitest run --config vitest.db.config.ts --sequence.shuffle.files=true "$@"
+
+# A RECUSA. Vem depois do vitest e ANTES da palavra "verde", porque o que se
+# recusa aqui é o próprio resultado — inclusive um resultado que passou.
+mexidos="$(arvore_mexeu)"
+if [ -n "$mexidos" ]; then
+  echo "" >&2
+  echo "FATAL: a árvore mudou DURANTE a corrida — este resultado não vale, tenha ele passado ou não." >&2
+  echo "       Arquivos tocados depois do início:" >&2
+  echo "$mexidos" | sed 's/^/         /' >&2
+  echo "       O veredito acima mediu uma mistura: parte do run viu o arquivo antigo," >&2
+  echo "       parte viu o novo, e nenhuma árvore que existe hoje foi medida inteira." >&2
+  echo "       Rode de novo com a árvore parada." >&2
+  exit 1
+fi
 
 echo "==> test:db verde"

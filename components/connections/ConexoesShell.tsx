@@ -3,11 +3,15 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+import { RedesSociaisClient } from "./RedesSociaisClient";
 import { CanalOficialClient } from "./CanalOficialClient";
 import { CanalParceiroClient } from "./CanalParceiroClient";
+import { CanalVozClient } from "./CanalVozClient";
 import { ConnectionsClient } from "./ConnectionsClient";
 import { TemplatesClient } from "./TemplatesClient";
 import { TemplatesParceiroClient } from "./TemplatesParceiroClient";
+import { TelefoniaClient } from "./TelefoniaClient";
+import { useT } from "@/hooks/i18n/useT";
 
 /**
  * Conexões — TODOS os canais em um lugar só.
@@ -32,11 +36,29 @@ import { TemplatesParceiroClient } from "./TemplatesParceiroClient";
  * apontando a aba certa, e um link colado no chat abre onde deveria. Aba que só
  * existe em `useState` transforma todo link salvo em "abre e procura de novo".
  */
-export function ConexoesShell({ wahaConfigured }: { wahaConfigured: boolean }) {
+export function ConexoesShell({
+  wahaConfigured,
+  wacallsConfigured,
+}: {
+  wahaConfigured: boolean;
+  wacallsConfigured: boolean;
+}) {
+  const t = useT();
   const router = useRouter();
   const params = useSearchParams();
   const abaParam = params.get("aba");
-  const aba = abaParam === "oficial" ? "oficial" : abaParam === "parceiro" ? "parceiro" : "numeros";
+  const aba =
+    abaParam === "sociais"
+      ? "sociais"
+      : abaParam === "oficial"
+      ? "oficial"
+      : abaParam === "parceiro"
+        ? "parceiro"
+        : abaParam === "telefonia"
+          ? "telefonia"
+          : abaParam === "voz"
+            ? "voz"
+            : "numeros";
   const sub = params.get("sub") === "templates" ? "templates" : "conexao";
 
   const irPara = (proximaAba: string, proximaSub?: string): void => {
@@ -51,7 +73,7 @@ export function ConexoesShell({ wahaConfigured }: { wahaConfigured: boolean }) {
 
   return (
     <Tabs value={aba} onValueChange={(v) => irPara(v, sub)} className="flex flex-col gap-4">
-      <TabsList>
+      <TabsList className="h-auto max-w-full flex-wrap justify-start">
         {/* Rótulos pelo que o usuário RECONHECE, não pelo nome técnico do motor por
             trás: ele sabe se leu um QR ou se tem conta na Meta; a sigla do provedor
             não diz nada a quem instalou o sistema para vender.
@@ -62,17 +84,29 @@ export function ConexoesShell({ wahaConfigured }: { wahaConfigured: boolean }) {
             a frase custou menos que abrir exceção no gate, e o gate continua
             estrito: o dia em que alguém escrever o nome do provider aqui DE VERDADE,
             ele reprova igual. */}
-        <TabsTrigger value="numeros">Números por QR</TabsTrigger>
-        <TabsTrigger value="oficial">API Oficial (Meta)</TabsTrigger>
+        <TabsTrigger value="numeros">{t("Números por QR")}</TabsTrigger>
+        <TabsTrigger value="oficial">{t("API Oficial (Meta)")}</TabsTrigger>
         {/* "Provedor parceiro" e não a marca: o rótulo da marca vem do servidor
             (`lib/channels/connect`), porque a tela não pode nomear provider — e
             porque no dia em que houver um segundo parceiro esta aba não muda.
             Aqui fica o CONCEITO; lá dentro o cartão diz de quem se trata. */}
-        <TabsTrigger value="parceiro">Provedor parceiro</TabsTrigger>
+        <TabsTrigger value="parceiro">{t("Provedor parceiro")}</TabsTrigger>
+        <TabsTrigger value="telefonia">{t("Telefone")}</TabsTrigger>
+        <TabsTrigger value="sociais">{t("Redes sociais")}</TabsTrigger>
+        <TabsTrigger value="voz">{t("Chamada de voz")}</TabsTrigger>
       </TabsList>
 
       <TabsContent value="numeros" className="mt-0">
         <ConnectionsClient wahaConfigured={wahaConfigured} />
+      </TabsContent>
+
+      <TabsContent value="telefonia" className="mt-0">
+        <TelefoniaClient />
+      </TabsContent>
+      <TabsContent value="sociais" className="mt-0"><RedesSociaisClient /></TabsContent>
+
+      <TabsContent value="voz" className="mt-0">
+        <CanalVozClient wacallsConfigured={wacallsConfigured} />
       </TabsContent>
 
       <TabsContent value="parceiro" className="mt-0">
@@ -83,8 +117,8 @@ export function ConexoesShell({ wahaConfigured }: { wahaConfigured: boolean }) {
             OUTRA coisa (respostas rápidas do atendente). */}
         <Tabs value={sub} onValueChange={(v) => irPara("parceiro", v)} className="flex flex-col gap-4">
           <TabsList>
-            <TabsTrigger value="conexao">Conexão</TabsTrigger>
-            <TabsTrigger value="templates">Modelos do parceiro</TabsTrigger>
+            <TabsTrigger value="conexao">{t("Conexão")}</TabsTrigger>
+            <TabsTrigger value="templates">{t("Modelos do parceiro")}</TabsTrigger>
           </TabsList>
           <TabsContent value="conexao" className="mt-0">
             <CanalParceiroClient />
@@ -98,14 +132,14 @@ export function ConexoesShell({ wahaConfigured }: { wahaConfigured: boolean }) {
       <TabsContent value="oficial" className="mt-0">
         <Tabs value={sub} onValueChange={(v) => irPara("oficial", v)} className="flex flex-col gap-4">
           <TabsList>
-            <TabsTrigger value="conexao">Conexão</TabsTrigger>
+            <TabsTrigger value="conexao">{t("Conexão")}</TabsTrigger>
             {/* "Templates da Meta", não "Templates": a barra lateral já tem um item
                 com esse nome que significa OUTRA coisa — respostas rápidas salvas
                 pelo atendente (`/app/templates`). Dois conceitos com o mesmo rótulo
                 fazem o operador clicar no errado e concluir que a tela está quebrada.
                 A colisão é anterior a esta mudança; o que dá para fazer aqui é não
                 agravá-la. */}
-            <TabsTrigger value="templates">Templates da Meta</TabsTrigger>
+            <TabsTrigger value="templates">{t("Templates da Meta")}</TabsTrigger>
           </TabsList>
           <TabsContent value="conexao" className="mt-0">
             <CanalOficialClient />

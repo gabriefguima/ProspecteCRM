@@ -7,6 +7,10 @@
 import { z } from "zod";
 import { flowGraphSchema } from "./graph-schema";
 
+/** Vocabulário da coluna `surface` (0167). A UI não recorta mais por ela. */
+export const FOLLOWUP_FLOW_SURFACES = ["followup", "crm_automation"] as const;
+export type FollowupFlowSurface = (typeof FOLLOWUP_FLOW_SURFACES)[number];
+
 export const createFollowupFlowSchema = z.strictObject({
   name: z.string().trim().min(1).max(80),
 });
@@ -15,12 +19,14 @@ export const createFollowupFlowSchema = z.strictObject({
 // desse fluxo cancela (outcome='replied') na 1ª resposta do contato em vez de
 // acordar o classify. Sibling de `kind` (não dentro de `params`) porque é uma
 // política de REAÇÃO À RESPOSTA, ortogonal a como o fluxo foi disparado — vale
-// pros 4 `kind`s igualmente. Default false quando ausente (fluxos existentes
+// pros kinds igualmente. Default false quando ausente (fluxos existentes
 // continuam acordando o classify, comportamento inalterado).
 const CANCEL_ON_REPLY = { cancel_on_reply: z.boolean().optional() };
 
 export const triggerConfigSchema = z.discriminatedUnion("kind", [
+  z.strictObject({kind:z.literal("appointment_no_show"),params:z.strictObject({event_type_ids:z.array(z.string().uuid()).optional()}).optional(),...CANCEL_ON_REPLY}),
   z.strictObject({ kind: z.literal("manual"), ...CANCEL_ON_REPLY }),
+  z.strictObject({ kind: z.literal("webhook"), ...CANCEL_ON_REPLY }),
   z.strictObject({
     kind: z.literal("stage_change"),
     params: z.strictObject({ stage_id: z.string().uuid() }),
@@ -51,6 +57,23 @@ export const triggerConfigSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 export type TriggerConfig = z.infer<typeof triggerConfigSchema>;
+
+/**
+ * Instalar um modelo pronto (`lib/followup/modelos/`). O corpo é mínimo de
+ * propósito: nome, textos, prazos e política de handoff vêm do MODELO, nunca do
+ * cliente — quem manda o grafo é o catálogo, e um body que pudesse mandar o seu
+ * seria a mesma porta do PATCH com outro nome.
+ *
+ * `stage_id` só é lido por modelo de gatilho de etapa (`pedeEtapa`), e é
+ * conferido contra a organização ativa antes de gravar: etapa de outra org no
+ * body é o anti-pattern nº 10 do CLAUDE.md.
+ */
+export const instalarModeloSchema = z.strictObject({
+  model_id: z.string().trim().min(1).max(80),
+  stage_id: z.string().uuid().optional(),
+  /** Renomear na hora de instalar — duas clínicas na mesma instalação, dois nomes. */
+  name: z.string().trim().min(1).max(80).optional(),
+});
 
 export const patchFollowupFlowSchema = z.strictObject({
   name: z.string().trim().min(1).max(80).optional(),
